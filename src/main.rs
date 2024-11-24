@@ -2,13 +2,22 @@ extern crate glfw;
 extern crate gl;
 extern crate freetype;
 
-use glfw::{Action, Context, Key, Modifiers, Window};
+use glfw::{Action, Context, Key};
 use gl::types::*;
-use freetype::freetype::{FT_Library, FT_Face};
-use stb_truetype::FontInfo;
+use std::mem;
+use freetype::freetype::{FT_Face, FT_Library};
 use std::{ffi::CString, ptr};
 use std::fs;
-use std::path::Path;
+use std::collections::HashMap;
+use glam::Mat4;
+
+#[derive(Debug, Clone, Copy)]
+struct Character {
+    texture_id: u32,
+    size: (i32, i32),
+    bearing: (i32, i32),
+    advance: u32
+}
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -57,7 +66,7 @@ fn create_shader_program() -> GLuint {
     program
 }
 
-fn load_font() -> FT_Face {
+fn load_font(characters: &mut HashMap<char, Character>) {
     let font_path = CString::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
         .expect("CString::new failed."); // Default system font on Debian
 
@@ -77,12 +86,50 @@ fn load_font() -> FT_Face {
             panic!("Failed to load font face");
         }
 
-        if freetype::freetype::FT_Set_Char_Size(face, 48 * 64, 0, 96, 0) != 0 {
-            panic!("Failed to set char size");
-        }
-    }
+        freetype::freetype::FT_Set_Pixel_Sizes(face, 0, 48); 
 
-    face
+        gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+        for c in 0..128 {
+            if freetype::freetype::FT_Load_Char(face, c as u64, freetype::freetype::FT_LOAD_RENDER as i32) != 0 {
+                panic!("Failed to load glyph");
+            }
+            let texture: *mut u32 = std::ptr::null_mut();
+            gl::GenTextures(1, texture);
+            gl::BindTexture(gl::TEXTURE_2D, *texture);
+
+            let bitmap = (*face).glyph;
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RED as i32,
+                (*bitmap).bitmap.width as i32,
+                (*bitmap).bitmap.rows as i32,
+                0, 
+                gl::RED,
+                gl::UNSIGNED_BYTE,
+                (*bitmap).bitmap.buffer as *const std::ffi::c_void
+            );
+
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+            let character: Character = Character {
+                texture_id: texture as u32,
+                size: ((*bitmap).bitmap.width as i32, (*bitmap).bitmap.rows as i32),
+                bearing: ((*bitmap).bitmap_left as i32, (*bitmap).bitmap_top as i32),
+                advance: (*bitmap).advance.x as u32,
+            };
+            let ch = char::from_u32(c).expect("Failed to convert u32 to char");
+            characters.insert(ch, character);
+        }
+        freetype::freetype::FT_Done_Face(face);
+        freetype::freetype::FT_Done_FreeType(library);
+    }
+}
+
+fn render_text() { // need to implement a shader
+    // activate corresponding render state
 }
 
 fn check_gl_error() {
@@ -95,84 +142,6 @@ fn check_gl_error() {
                 gl::INVALID_OPERATION => println!("OpenGL error: INVALID_OPERATION (0x{:x})", error),
                 gl::OUT_OF_MEMORY => println!("OpenGL error: OUT_OF_MEMORY (0x{:x})", error),
                 _ => println!("OpenGL error: Unknown error (0x{:x})", error),
-            }
-        }
-    }
-}
-
-fn render_text(text: &str, mut x: f32, y: f32, scale: f32, face: FT_Face) {
-    let mut vao = 0;
-    let mut vbo = 0;
-
-    unsafe {
-        gl::GenVertexArrays(1, &mut vao);
-        gl::GenBuffers(1, &mut vbo);
-        gl::BindVertexArray(vao);
-        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-    }
-    
-    unsafe {
-        for c in text.chars() {
-            if freetype::freetype::FT_Load_Char(face, c as u64, freetype::freetype::FT_LOAD_RENDER as i32) == 0 {
-                let bitmap = &*(*face).glyph;
-                println!("{:?}", bitmap);
-                let width = bitmap.metrics.width as i32;
-                let height = bitmap.metrics.height as i32;
-    
-                // Create texture for the char bitmap
-                let mut texture_id: GLuint = 0;
-                gl::GenTextures(1, &mut texture_id);
-                println!("Generated texture id: {:?}", texture_id);
-                check_gl_error();
-
-                gl::BindTexture(gl::TEXTURE_2D, texture_id);
-                check_gl_error();
-
-                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as GLint);
-                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as GLint);
-                check_gl_error();                
-
-                gl::TexImage2D(
-                    gl::TEXTURE_2D,
-                    0,
-                    gl::RED as GLint,
-                    width as GLint,
-                    height as GLint,
-                    0,
-                    gl::RGBA,
-                    gl::UNSIGNED_BYTE,
-                    bitmap.bitmap.buffer as *const std::ffi::c_void,
-                );
-                check_gl_error();
-                
-                // Render the char at the specified position
-                let vertices: [GLfloat; 20] = [
-                    x, y, 0.0, 0.0, 1.0, // bottom left
-                    x + scale, y, 1.0, 0.0, 1.0, // bottom right
-                    x, y + scale, 0.0, 1.0, 1.0, // top left
-                    x + scale, y + scale, 1.0, 1.0, 1.0, // top right
-                ];
-
-                gl::BufferData(
-                    gl::ARRAY_BUFFER,
-                    (vertices.len() * std::mem::size_of::<f32>()) as GLsizeiptr,
-                    vertices.as_ptr() as *const std::ffi::c_void,
-                    gl::STATIC_DRAW
-                );
-
-
-                // Set vertex attribute pointers
-                gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 5 * std::mem::size_of::<GLfloat>() as i32, std::ptr::null());
-                gl::EnableVertexAttribArray(0);
-
-                gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, 5 * std::mem::size_of::<GLfloat>() as i32, (2 * std::mem::size_of::<GLfloat>()) as *const std::ffi::c_void);
-                gl::EnableVertexAttribArray(1);
-
-                // Draw the quad for this char (VAO/VBO setup needed)
-                gl::BindTexture(gl::TEXTURE_2D, texture_id);
-                gl::DrawArrays(gl::TRIANGLE_STRIP, 0, 4);
-                check_gl_error();
-                x += scale;
             }
         }
     }
@@ -200,6 +169,8 @@ fn main() {
 
     println!("{}", ascii_art);
 
+    let mut characters: HashMap<char, Character> = HashMap::new();
+
     let mut glfw = glfw::init_no_callbacks().unwrap();
     let (mut window, events) = glfw.create_window(800, 600, "Rush Terminal", glfw::WindowMode::Windowed)
         .expect("Failed to create window");
@@ -209,9 +180,52 @@ fn main() {
     gl::load_with(|s| window.get_proc_address(s) as *const _);
 
     init_opengl(&glfw);
+    unsafe {
+        gl::Enable(gl::BLEND);
+        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+    }
 
-    let face = load_font();
-    let program = create_shader_program();
+    let projection: Mat4 = glam::Mat4::orthographic_lh(0.0, 800.0, 0.0, 600.0, -1.0, 1.0);
+    let mut vao: GLuint = 0;
+    let mut vbo: GLuint = 0;
+
+    unsafe {
+        gl::GenVertexArrays(1, &mut vao);
+        gl::GenBuffers(1, &mut vbo);
+
+        // Bind the vao, vbo
+        gl::BindVertexArray(vao);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+        
+        // Allocate buffer memory without initializing data
+        gl::BufferData(
+            gl::ARRAY_BUFFER,
+            (mem::size_of::<f32>() * 6 * 4) as GLsizeiptr, // Buffer size
+            ptr::null(), // No data initially 
+            gl::DYNAMIC_DRAW // dynamic draw usage
+        );
+        
+        // Enable the vertex attribute array
+        gl::EnableVertexAttribArray(0);
+
+        // Set the vertex attribute pointer
+        gl::VertexAttribPointer(
+            0, // attribute index
+            4, // number of components per vertex (vec4)
+            gl::FLOAT, // Data type
+            gl::FALSE, // Normalize
+            (4 * mem::size_of::<f32>()) as i32, // Stride (4 floats per vertex)
+            ptr::null() // Offset (0 for the first attribute)
+        );
+       
+        // Unbind the VBO
+        gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+        // Unbind the VAO
+        gl::BindVertexArray(0);
+    }
+
+    load_font(&mut characters);
+    let _program = create_shader_program();
 
     unsafe {
         gl::ClearColor(0.0, 0.0, 0.0, 1.0);
@@ -223,7 +237,6 @@ fn main() {
             gl::Clear(gl::COLOR_BUFFER_BIT);
         }
         
-        render_text("Hello, world!", 100.0, 100.0, 1.0, face);
         window.swap_buffers();
     }
 }
