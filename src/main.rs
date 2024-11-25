@@ -1,3 +1,5 @@
+mod shader;
+
 extern crate gl;
 extern crate glfw;
 extern crate gl_loader;
@@ -9,12 +11,11 @@ use std::fs;
 
 const WINDOW_WIDTH:  u16 = 800;
 const WINDOW_HEIGHT: u16 = 600;
-const VERTEX_SHADER_PATH: &str = "/home/bobby/code/apps/rush/text.vert";
-const FRAGMENT_SHADER_PATH: &str = "/home/bobby/code/apps/rush/text.frag";
-const NUM_VERTICES_RECT: u8 = 12;
+const NUM_VERTEX_ATTRIBS_RECT: u8 = 24;
 const NUM_INDICES_RECT: u8 = 6;
 
 fn init_opengl() {
+    shader::hey();
     gl_loader::init_gl();
     gl::load_with(|symbol| gl_loader::get_proc_address(symbol) as *const _);
 }
@@ -73,7 +74,7 @@ fn check_shader_compile_status(shader: u32) {
     }
 }
 
-fn load_object_into_mem(vertices: [f32; NUM_VERTICES_RECT as usize], indices: [u32; NUM_INDICES_RECT as usize]) -> (u32, u32) {
+fn load_object_into_mem(vertices: [f32; NUM_VERTEX_ATTRIBS_RECT as usize], indices: [u32; NUM_INDICES_RECT as usize]) -> (u32, u32) {
     let mut vao: u32 = 0;
     let mut vbo: u32 = 0;
     let mut ebo: u32 = 0;
@@ -96,8 +97,12 @@ fn load_object_into_mem(vertices: [f32; NUM_VERTICES_RECT as usize], indices: [u
         gl::BufferData(gl::ELEMENT_ARRAY_BUFFER, (std::mem::size_of::<u32>() * indices.len()).try_into().unwrap(), indices.as_ptr() as *const c_void, gl::STATIC_DRAW);
         
         // Configure vertex attributes
-        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, (3 * std::mem::size_of::<f32>()).try_into().unwrap(), std::ptr::null());
+        // position attrib
+        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, (6 * std::mem::size_of::<f32>()).try_into().unwrap(), std::ptr::null());
         gl::EnableVertexAttribArray(0);
+        // Color attrib
+        gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, (6 * std::mem::size_of::<f32>()).try_into().unwrap(), (3 * std::mem::size_of::<f32>()) as *const c_void);
+        gl::EnableVertexAttribArray(1);
 
         gl::BindBuffer(gl::ARRAY_BUFFER, 0);
         gl::BindVertexArray(0);
@@ -106,12 +111,12 @@ fn load_object_into_mem(vertices: [f32; NUM_VERTICES_RECT as usize], indices: [u
     (vao, ebo)
 }
 
-unsafe fn compile_shaders() -> u32 {
+unsafe fn create_shader_program(vertex_shader_path: &str, fragment_shader_path: &str) -> u32 {
     let shader_program: u32;
 
-    let vertex_shader_source = fs::read_to_string(VERTEX_SHADER_PATH)
+    let vertex_shader_source = fs::read_to_string(vertex_shader_path)
         .expect("Failed to read vertex shader source");
-    let fragment_shader_source = fs::read_to_string(FRAGMENT_SHADER_PATH)
+    let fragment_shader_source = fs::read_to_string(fragment_shader_path)
         .expect("Failed to read fragment shader source");
 
     let vertex_shader_cstr = std::ffi::CString::new(vertex_shader_source)
@@ -146,7 +151,6 @@ unsafe fn compile_shaders() -> u32 {
 }
 
 unsafe fn draw_object_from_mem(vao: u32, ebo: u32) {
-    
     gl::BindVertexArray(vao);
     gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
     gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
@@ -174,18 +178,20 @@ fn main() {
         gl::Viewport(0, 0, WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
     }
 
-    let rect_one_vertices: [f32; 12] = [
-        -1.0,  0.0, 0.0, // bottom left
-         0.0,  0.0, 0.0, // bottom right
-        -1.0,  1.0, 0.0, // top left
-         0.0,  1.0, 0.0, // top right 
+    let rect_one_vertex_attribs: [f32; NUM_VERTEX_ATTRIBS_RECT as usize] = [
+        // positions     // colors
+        -1.0,  0.0, 0.0, 1.0, 0.0, 0.0, // bottom left
+         0.0,  0.0, 0.0, 0.0, 1.0, 0.0, // bottom right
+        -1.0,  1.0, 0.0, 0.0, 0.0, 1.0, // top left
+         0.0,  1.0, 0.0, 0.0, 1.0, 0.0, // top right 
     ];
 
-    let rect_two_vertices: [f32; 12] = [
-        0.0, -1.0, 0.0, // bottom left
-        1.0, -1.0, 0.0, // bottom right
-        0.0,  0.0, 0.0, // top left
-        1.0,  0.0, 0.0, // top right
+    let rect_two_vertex_attribs: [f32; NUM_VERTEX_ATTRIBS_RECT as usize] = [
+        // Positions    // Colors
+        0.0, -1.0, 0.0, 0.0, 0.0, 1.0, // bottom left
+        1.0, -1.0, 0.0, 0.0, 1.0, 0.0, // bottom right
+        0.0,  0.0, 0.0, 0.0, 1.0, 0.0, // top left
+        1.0,  0.0, 0.0, 1.0, 0.0, 0.0 // top right
     ];
 
     let rect_one_indices: [u32; 6] = [
@@ -198,16 +204,12 @@ fn main() {
         1, 2, 3
     ];
     
-    let (vao1, ebo1) = load_object_into_mem(rect_one_vertices, rect_one_indices);
-    let (vao2, ebo2) = load_object_into_mem(rect_two_vertices, rect_two_indices);
-
-    let shader_program: u32 = unsafe { compile_shaders() };
-    unsafe { 
-        gl::UseProgram(shader_program);
-        // Optionally set polygon mode to wireframe
-        gl::PolygonMode(gl::FRONT_AND_BACK, gl::FILL);
-    };
-        
+    let (vao1, ebo1) = load_object_into_mem(rect_one_vertex_attribs, rect_one_indices);
+    let (vao2, ebo2) = load_object_into_mem(rect_two_vertex_attribs, rect_two_indices);
+    
+    let vertex_shader_path = "/home/bobby/code/apps/rush/vertex.vert";
+    let fragment_shader_path = "/home/bobby/code/apps/rush/fragment.frag";
+    let shader_program: u32 = unsafe { create_shader_program(vertex_shader_path, fragment_shader_path) };
 
     // Loop until the user closes the window
     while !window.should_close() {
@@ -227,7 +229,16 @@ fn main() {
         unsafe {
             gl::ClearColor(0.2, 0.3, 0.3, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
-
+            gl::UseProgram(shader_program);
+            let dt = glfw.get_time();
+            println!("{:?}", dt.sin() / 2.0 + 0.5);
+            let red: f64 = dt.sin() / 2.0 + 0.5;
+            let green: f64 = dt.sin() / 2.0 + 0.5;
+            let blue: f64 = dt.sin() / 2.0 + 0.5;
+            let color_uniform_name = std::ffi::CString::new("color").unwrap();
+            let vertex_color_location = gl::GetUniformLocation(shader_program, color_uniform_name.as_ptr());
+            gl::Uniform4f(vertex_color_location, red as f32, green as f32, blue as f32, 1.0);
+             
             draw_object_from_mem(vao1, ebo1);           
             draw_object_from_mem(vao2, ebo2);           
         }    
