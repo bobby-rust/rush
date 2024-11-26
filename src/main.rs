@@ -1,11 +1,14 @@
 mod shader;
 
+extern crate freetype;
 extern crate gl;
 extern crate gl_loader;
 extern crate glfw;
 
+use freetype::freetype as ft;
 use glfw::{Action, Context, Key};
 use shader::Shader;
+use std::collections::HashMap;
 use std::env;
 use std::os::raw::c_void;
 
@@ -13,6 +16,108 @@ const WINDOW_WIDTH: u16 = 800;
 const WINDOW_HEIGHT: u16 = 600;
 const NUM_VERTEX_ATTRIBS_RECT: u8 = 24;
 const NUM_INDICES_RECT: u8 = 6;
+
+struct Character {
+    texture_id: u32,
+    size: (i32, i32),
+    bearing: (i32, i32),
+    advance: i64,
+}
+
+fn init_freetype_library() -> ft::FT_Library {
+    let mut lib: ft::FT_Library = std::ptr::null_mut();
+    unsafe {
+        let err = ft::FT_Init_FreeType(&mut lib);
+        if err != 0 {
+            panic!(
+                "Could not initialize FreeType library. ERROR CODE {:?}",
+                lib
+            );
+        }
+    }
+
+    lib
+}
+
+fn create_ft_face(lib: ft::FT_Library, font_path: &std::ffi::CStr) -> ft::FT_Face {
+    let face: ft::FT_Face = std::ptr::null_mut();
+    let error = unsafe { ft::FT_New_Face(lib, font_path.as_ptr(), 0, face as *mut _) };
+    if error != 0 {
+        panic!("Could not create font face. ERROR CODE: {:?}", error);
+    }
+
+    face
+}
+
+fn render_text(lib: ft::FT_Library, face: ft::FT_Face) {
+    let mut characters: HashMap<char, Character> = HashMap::new();
+    unsafe {
+        ft::FT_Set_Pixel_Sizes(face, 0, 48);
+
+        gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
+        for c in 0..127 {
+            let error = ft::FT_Load_Char(face, c, ft::FT_LOAD_RENDER as i32);
+            if error != 0 {
+                panic!("Could not load character. ERROR CODE: {:?}", error);
+            }
+
+            // Generate texture
+            let mut texture: u32 = 0;
+            let glyph = &*(*face).glyph;
+            gl::GenTextures(1, &mut texture);
+            gl::BindTexture(gl::TEXTURE_2D, texture);
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RED.try_into().unwrap(),
+                glyph.bitmap.width.try_into().unwrap(),
+                glyph.bitmap.rows.try_into().unwrap(),
+                0,
+                gl::RED,
+                gl::UNSIGNED_BYTE,
+                glyph.bitmap.buffer as *const _,
+            );
+
+            // Set texture options
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_S,
+                gl::CLAMP_TO_EDGE.try_into().unwrap(),
+            );
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_T,
+                gl::CLAMP_TO_EDGE.try_into().unwrap(),
+            );
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MIN_FILTER,
+                gl::LINEAR.try_into().unwrap(),
+            );
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MAG_FILTER,
+                gl::LINEAR.try_into().unwrap(),
+            );
+
+            // Store character for later use
+            let character: Character = Character {
+                texture_id: texture,
+                size: (
+                    glyph.bitmap.width.try_into().unwrap(),
+                    glyph.bitmap.rows.try_into().unwrap(),
+                ),
+                bearing: (glyph.bitmap_left, glyph.bitmap_top),
+                advance: glyph.advance.x,
+            };
+
+            characters.insert(char::from(c as u8), character);
+        }
+        ft::FT_Done_Face(face);
+        ft::FT_Done_Library(lib);
+    };
+}
 
 fn init_opengl() {
     gl_loader::init_gl();
