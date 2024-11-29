@@ -4,9 +4,11 @@ extern crate freetype;
 extern crate gl;
 extern crate gl_loader;
 extern crate glfw;
+extern crate nalgebra_glm;
 
 use freetype::freetype as ft;
 use glfw::{Action, Context, Key};
+use nalgebra_glm as glm;
 use shader::Shader;
 use std::collections::HashMap;
 use std::env;
@@ -24,7 +26,7 @@ struct Character {
     advance: i64,
 }
 
-fn init_freetype_library() -> ft::FT_Library {
+fn init_freetype_lib() -> ft::FT_Library {
     let mut lib: ft::FT_Library = std::ptr::null_mut();
     unsafe {
         let err = ft::FT_Init_FreeType(&mut lib);
@@ -40,8 +42,8 @@ fn init_freetype_library() -> ft::FT_Library {
 }
 
 fn create_ft_face(lib: ft::FT_Library, font_path: &std::ffi::CStr) -> ft::FT_Face {
-    let face: ft::FT_Face = std::ptr::null_mut();
-    let error = unsafe { ft::FT_New_Face(lib, font_path.as_ptr(), 0, face as *mut _) };
+    let mut face: ft::FT_Face = std::ptr::null_mut();
+    let error = unsafe { ft::FT_New_Face(lib, font_path.as_ptr(), 0, &mut face) };
     if error != 0 {
         panic!("Could not create font face. ERROR CODE: {:?}", error);
     }
@@ -49,7 +51,7 @@ fn create_ft_face(lib: ft::FT_Library, font_path: &std::ffi::CStr) -> ft::FT_Fac
     face
 }
 
-fn render_text(lib: ft::FT_Library, face: ft::FT_Face) {
+fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Character> {
     let mut characters: HashMap<char, Character> = HashMap::new();
     unsafe {
         ft::FT_Set_Pixel_Sizes(face, 0, 48);
@@ -117,6 +119,106 @@ fn render_text(lib: ft::FT_Library, face: ft::FT_Face) {
         ft::FT_Done_Face(face);
         ft::FT_Done_Library(lib);
     };
+
+    characters
+}
+
+unsafe fn make_text_vao_vbo() -> (u32, u32) {
+    gl::Enable(gl::BLEND);
+
+    let mut vao: u32 = 0;
+    let mut vbo: u32 = 0;
+
+    gl::GenVertexArrays(1, &mut vao);
+    gl::GenBuffers(1, &mut vbo);
+    gl::BindVertexArray(vao);
+    gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+    gl::BufferData(
+        gl::ARRAY_BUFFER,
+        (std::mem::size_of::<f32>() * 6 * 4) as isize,
+        std::ptr::null(),
+        gl::DYNAMIC_DRAW,
+    );
+
+    gl::EnableVertexAttribArray(0);
+    gl::VertexAttribPointer(
+        0,
+        4,
+        gl::FLOAT,
+        gl::FALSE,
+        4 * std::mem::size_of::<f32>() as i32,
+        std::ptr::null(),
+    );
+    gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+    gl::BindVertexArray(0);
+
+    (vao, vbo)
+}
+
+fn render_text(
+    text: String,
+    mut x: f32,
+    y: f32,
+    scale: f32,
+    color: glm::Vec3,
+    s: &Shader,
+    vao: u32,
+    vbo: u32,
+    characters: &HashMap<char, Character>,
+) {
+    s.use_shader();
+
+    let uniform_color_var_name =
+        std::ffi::CString::new("textColor").expect("Could not create C string.");
+
+    unsafe {
+        gl::Uniform3f(
+            gl::GetUniformLocation(*(s.get_id()), uniform_color_var_name.as_ptr()),
+            color.x,
+            color.y,
+            color.z,
+        );
+
+        gl::ActiveTexture(gl::TEXTURE0);
+        gl::BindVertexArray(vao);
+
+        for c in text.chars() {
+            let ch: &Character = characters.get(&c).unwrap();
+            let xpos: f32 = x + ch.bearing.0 as f32 * scale;
+            let ypos: f32 = y - (ch.size.1 - ch.bearing.1) as f32 * scale;
+
+            let w: f32 = ch.size.0 as f32 * scale;
+            let h: f32 = ch.size.1 as f32 * scale;
+
+            // update vbo for each character
+            let vertices: [[f32; 4]; 6] = [
+                [xpos, ypos + h, 0.0, 0.0],
+                [xpos, ypos, 0.0, 1.0],
+                [xpos + w, ypos, 1.0, 1.0],
+                [xpos, ypos + h, 0.0, 0.0],
+                [xpos + w, ypos + h, 1.0, 1.0],
+                [xpos + w, ypos + h, 1.0, 0.0],
+            ];
+
+            // Render glyph texture over quad
+            gl::BindTexture(gl::TEXTURE_2D, ch.texture_id);
+            // update content of vbo memory
+            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+            gl::BufferSubData(
+                gl::ARRAY_BUFFER,
+                0,
+                std::mem::size_of::<[[f32; 4]; 6]>() as isize,
+                vertices.as_ptr() as *const c_void,
+            );
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+            // render quad
+            gl::DrawArrays(gl::TRIANGLES, 0, 6);
+            x += (ch.advance >> 6) as f32 * scale;
+        }
+
+        gl::BindVertexArray(0);
+        gl::BindTexture(gl::TEXTURE_2D, 0);
+    }
 }
 
 fn init_opengl() {
@@ -267,6 +369,25 @@ fn main() {
         fragment_path.to_str().unwrap(),
     );
 
+    let uniform_projection_var_name =
+        std::ffi::CString::new("projection").expect("Could not create C string");
+    let projection: glm::Mat4 = glm::ortho(0.0, 800.0, 0.0, 600.0, -1.0, 1.0);
+    unsafe {
+        gl::UniformMatrix4fv(
+            gl::GetUniformLocation(*shader.get_id(), uniform_projection_var_name.as_ptr()),
+            1,
+            gl::FALSE,
+            projection.as_slice().as_ptr(),
+        );
+    }
+
+    let (text_vao, text_vbo) = unsafe { make_text_vao_vbo() };
+    let lib = init_freetype_lib();
+    let font_path = std::ffi::CString::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
+        .expect("Failed to create C string for font path");
+    let face = create_ft_face(lib, &font_path);
+    let characters = load_font_chars(lib, face);
+
     // Loop until the user closes the window
     while !window.should_close() {
         window.swap_buffers();
@@ -304,6 +425,18 @@ fn main() {
 
             draw_object_from_mem(vao1, ebo1);
             draw_object_from_mem(vao2, ebo2);
+
+            render_text(
+                "Hey".to_string(),
+                25.0,
+                25.0,
+                1.0,
+                glm::vec3(0.5, 0.8, 0.2),
+                &shader,
+                text_vao,
+                text_vbo,
+                &characters,
+            );
         }
     }
 }
