@@ -13,11 +13,11 @@ use shader::Shader;
 use std::collections::HashMap;
 use std::env;
 use std::os::raw::c_void;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 const WINDOW_WIDTH: u16 = 800;
 const WINDOW_HEIGHT: u16 = 600;
-const NUM_VERTEX_ATTRIBS_RECT: u8 = 24;
-const NUM_INDICES_RECT: u8 = 6;
 
 struct Character {
     texture_id: u32,
@@ -51,8 +51,8 @@ fn create_ft_face(lib: ft::FT_Library, font_path: &std::ffi::CStr) -> ft::FT_Fac
     face
 }
 
-fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Character> {
-    let mut characters: HashMap<char, Character> = HashMap::new();
+fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> Rc<RefCell<HashMap<char, Character>>> {
+    let characters = Rc::new(RefCell::new(HashMap::new()));
     unsafe {
         ft::FT_Set_Pixel_Sizes(face, 0, 48);
 
@@ -114,7 +114,7 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
                 advance: glyph.advance.x,
             };
 
-            characters.insert(char::from(c as u8), character);
+            characters.borrow_mut().insert(char::from(c as u8), character);
         }
         gl::BindTexture(gl::TEXTURE_2D, 0);
 
@@ -160,8 +160,8 @@ unsafe fn make_text_vao_vbo() -> (u32, u32) {
 
 fn render_text(
     text: String,
-    x: f32,
-    y: f32,
+    // x: f32,
+    // y: f32,
     scale: f32,
     color: glm::Vec3,
     s: &Shader,
@@ -169,6 +169,9 @@ fn render_text(
     vbo: u32,
     characters: &HashMap<char, Character>,
 ) {
+    let mut x: f32 = 0.0;
+    let mut nlines = 1;
+    let padding = 10.0;
     s.use_shader();
 
     let uniform_color_var_name =
@@ -187,9 +190,20 @@ fn render_text(
 
         for c in text.chars() {
             let ch: &Character = characters.get(&c).unwrap();
-            let xpos: f32 = x + ch.bearing.0 as f32 * scale;
-            let ypos: f32 = y - (ch.size.1 - ch.bearing.1) as f32 * scale;
+            let ch_height = ch.size.1 as f32 * scale;
+            let ch_bearing_y = ch.bearing.1 as f32 * scale;
+            
+            let line_height = (ch_height as f32 * scale) + padding;
+            let mut ypos = WINDOW_HEIGHT as f32 - (nlines as f32 * line_height) - padding;
+            if x > WINDOW_WIDTH as f32 {
+                x = 0.0;
+                nlines += 1;
+            }
+             
+            ypos -= ch_height * ch_bearing_y;
 
+            let xpos: f32 = x + ch.bearing.0 as f32 * scale;
+            x += (ch.advance / 64) as f32 * scale;
             let w: f32 = ch.size.0 as f32 * scale;
             let h: f32 = ch.size.1 as f32 * scale;
 
@@ -239,81 +253,6 @@ fn framebuffer_size_callback(_window: &mut glfw::Window, width: i32, height: i32
     }
 }
 
-fn load_object_into_mem(
-    vertices: [f32; (NUM_VERTEX_ATTRIBS_RECT - 6) as usize],
-    indices: [u32; NUM_INDICES_RECT as usize],
-) -> (u32, u32) {
-    let mut vao: u32 = 0;
-    let mut vbo: u32 = 0;
-    let mut ebo: u32 = 0;
-
-    unsafe {
-        // Generate and bind vao, vbo
-        gl::GenVertexArrays(1, &mut vao);
-        gl::BindVertexArray(vao);
-        gl::GenBuffers(1, &mut vbo);
-        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-
-        // Copy vertices data into vbo
-        gl::BufferData(
-            gl::ARRAY_BUFFER,
-            (std::mem::size_of::<f32>() * vertices.len())
-                .try_into()
-                .unwrap(),
-            vertices.as_ptr() as *const c_void,
-            gl::STATIC_DRAW,
-        );
-
-        // generate and bind ebo
-        gl::GenBuffers(1, &mut ebo);
-        gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
-
-        // Copy indices data into ebo
-        gl::BufferData(
-            gl::ELEMENT_ARRAY_BUFFER,
-            (std::mem::size_of::<u32>() * indices.len())
-                .try_into()
-                .unwrap(),
-            indices.as_ptr() as *const c_void,
-            gl::STATIC_DRAW,
-        );
-
-        // Configure vertex attributes
-        // position attrib
-        gl::VertexAttribPointer(
-            0,
-            3,
-            gl::FLOAT,
-            gl::FALSE,
-            (6 * std::mem::size_of::<f32>()).try_into().unwrap(),
-            std::ptr::null(),
-        );
-        gl::EnableVertexAttribArray(0);
-        // Color attrib
-        gl::VertexAttribPointer(
-            1,
-            3,
-            gl::FLOAT,
-            gl::FALSE,
-            (6 * std::mem::size_of::<f32>()).try_into().unwrap(),
-            (3 * std::mem::size_of::<f32>()) as *const c_void,
-        );
-        gl::EnableVertexAttribArray(1);
-
-        gl::BindBuffer(gl::ARRAY_BUFFER, 0);
-        gl::BindVertexArray(0);
-    }
-
-    (vao, ebo)
-}
-
-unsafe fn draw_object_from_mem(vao: u32, ebo: u32) {
-    gl::BindVertexArray(vao);
-    gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
-    gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
-    gl::BindVertexArray(0);
-}
-
 fn check_gl_errors() {
     let err = unsafe { gl::GetError() };
     if err != gl::NO_ERROR {
@@ -321,7 +260,6 @@ fn check_gl_errors() {
     }
 }
 
-static mut PRESSED_KEY: Option<char> = None;
 fn key_to_char(key: glfw::Key) -> Option<char> {
     match key {
         glfw::Key::A => Some('A'),
@@ -354,17 +292,6 @@ fn key_to_char(key: glfw::Key) -> Option<char> {
     }
 }
 
-// When a key is pressed, the x location of where to render the key changes
-fn key_callback(window: &mut glfw::Window, key: glfw::Key, scancode: i32, action: glfw::Action, modifiers: glfw::Modifiers, x: &mut f32, characters: &HashMap<char, Character>, scale: f32) {
-    if action == glfw::Action::Press || action == glfw::Action::Repeat {
-        unsafe { 
-            PRESSED_KEY = key_to_char(key);
-            let ch: &Character = characters.get(&PRESSED_KEY.unwrap()).unwrap();
-            *x += (ch.advance >> 6) as f32 * scale;
-        }
-    }
-}
-
 fn main() {
     let mut glfw = glfw::init_no_callbacks().unwrap();
     let (mut window, events) = glfw
@@ -378,9 +305,7 @@ fn main() {
 
     glfw::Window::set_framebuffer_size_callback(&mut window, framebuffer_size_callback);
 
-
     init_opengl();
-
 
     // Make the window's context current
     window.make_current();
@@ -390,32 +315,7 @@ fn main() {
         gl::Enable(gl::CULL_FACE);
         gl::Viewport(0, 0, WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
     }
-
-    // let rect_one_vertex_attribs: [f32; (NUM_VERTEX_ATTRIBS_RECT - 6) as usize] = [
-    //     // positions     // colors
-    //     -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, // bottom left
-    //     0.0, 0.0, 0.0, 0.0, 1.0, 0.0, // bottom right
-    //     -1.0, 1.0, 0.0, 0.0, 0.0,
-    //     1.0, // top left
-    //          // 0.0,  1.0, 0.0, 0.0, 1.0, 0.0, // top right
-    // ];
-    //
-    // let rect_two_vertex_attribs: [f32; (NUM_VERTEX_ATTRIBS_RECT - 6) as usize] = [
-    //     // Positions    // Colors
-    //     0.0, -1.0, 0.0, 0.0, 0.0, 1.0, // bottom left
-    //     1.0, -1.0, 0.0, 0.0, 1.0, 0.0, // bottom right
-    //     0.0, 0.0, 0.0, 0.0, 1.0,
-    //     0.0, // top left
-    //          // 1.0,  0.0, 0.0, 1.0, 0.0, 0.0 // top right
-    // ];
-    //
-    // let rect_one_indices: [u32; 6] = [0, 1, 2, 1, 2, 3];
-    //
-    // let rect_two_indices: [u32; 6] = [0, 1, 2, 1, 2, 3];
-    //
-    // let (vao1, ebo1) = load_object_into_mem(rect_one_vertex_attribs, rect_one_indices);
-    // let (vao2, ebo2) = load_object_into_mem(rect_two_vertex_attribs, rect_two_indices);
-    //
+    
     let dir = env::current_dir().expect("Could not get current directory");
 
     let vertex_path = dir.join("shader.vs");
@@ -453,19 +353,38 @@ fn main() {
     unsafe { 
         freetype::freetype::FT_Set_Pixel_Sizes(face, 0, 48);
     }
+
     let characters = load_font_chars(lib, face);
 
     let (text_vao, text_vbo) = unsafe { make_text_vao_vbo() };
+
     // unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE); }
-    //
+    
     // Loop until the user closes the window
-    let mut x = 0.0;
+    // let x = Rc::new(RefCell::new(0.0));
+    let typed_text = Rc::new(RefCell::new(String::new()));
+
     window.set_key_callback({
-        move |window, key, scancode, action, modifiers| {
-            key_callback(window, key, scancode, action, modifiers, &mut x, &characters, 1.0)
+        let typed_text_clone = Rc::clone(&typed_text);
+        // let characters_clone = Rc::clone(&characters);
+        // let x_clone = Rc::clone(&x);
+        move |_window, key, _scancode, action, _modifiers| {
+            let mut typed_text_borrow = typed_text_clone.borrow_mut();
+            // let characters_borrow = characters_clone.borrow_mut();
+            // let mut x_borrow = x_clone.borrow_mut();
+            if let Some(key_pressed) = key_to_char(key) {
+                if  action == glfw::Action::Press  {
+                    // let ch: &Character = characters_borrow.get(&key_pressed).unwrap();
+                    // let scale = 1.0;
+                    // *x_borrow += (ch.advance >> 6) as f32 * scale;
+                    typed_text_borrow.push(key_pressed);
+                }
+            }
         }
     });
+
     while !window.should_close() {
+        // println!("x is: {:?}", *x);
         window.swap_buffers();
 
         glfw.poll_events();
@@ -483,47 +402,20 @@ fn main() {
             gl::ClearColor(0.2, 0.3, 0.3, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
 
-            // shader.use_shader();
-            // let dt = glfw.get_time();
-            // println!("{:?}", dt.sin() / 2.0 + 0.5);
-            // let red: f64 = dt.sin() / 2.0 + 0.5;
-            // let green: f64 = dt.sin() / 2.0 + 0.5;
-            // let blue: f64 = dt.sin() / 2.0 + 0.5;
-            // let color_uniform_name = std::ffi::CString::new("color").unwrap();
-            // let vertex_color_location =
-            //     gl::GetUniformLocation(*shader.get_id(), color_uniform_name.as_ptr());
-            // gl::Uniform4f(
-            //     vertex_color_location,
-            //     red as f32,
-            //     green as f32,
-            //     blue as f32,
-            //     1.0,
-            // );
+            // What needs to happen is that we need a String to hold all of the text that needs to
+            // be rendered. PRESSED_KEY should simply append a character to the string, or pop if
+            // backspace
 
-            // draw_object_from_mem(vao1, ebo1);
-            // draw_object_from_mem(vao2, ebo2);
-
-            // render_text(
-            //     "Hey".to_string(),
-            //     25.0,
-            //     25.0,
-            //     1.0,
-            //     glm::vec3(0.5, 0.8, 0.2),
-            //     &shader,
-            //     text_vao,
-            //     text_vbo,
-            //     &characters,
-            // );
             render_text(
-                PRESSED_KEY.unwrap().to_string(),
-                x,
-                25.0,
+                typed_text.borrow().to_string(),
+                // *x.borrow_mut(),
+                // WINDOW_HEIGHT as f32 - 40.0,
                 1.0,
                 glm::vec3(0.5, 0.8, 0.2),
                 &shader,
                 text_vao,
                 text_vbo,
-                &characters,
+                &characters.borrow_mut(),
             );
         }
     }
