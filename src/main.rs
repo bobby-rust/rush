@@ -102,7 +102,7 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
                 gl::TEXTURE_MAG_FILTER,
                 gl::LINEAR.try_into().unwrap(),
             );
-
+            
             // Store character for later use
             let character: Character = Character {
                 texture_id: texture,
@@ -116,6 +116,8 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
 
             characters.insert(char::from(c as u8), character);
         }
+        gl::BindTexture(gl::TEXTURE_2D, 0);
+
         ft::FT_Done_Face(face);
         ft::FT_Done_Library(lib);
     };
@@ -125,6 +127,7 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
 
 unsafe fn make_text_vao_vbo() -> (u32, u32) {
     gl::Enable(gl::BLEND);
+    gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
     let mut vao: u32 = 0;
     let mut vbo: u32 = 0;
@@ -173,7 +176,7 @@ fn render_text(
 
     unsafe {
         gl::Uniform3f(
-            gl::GetUniformLocation(*(s.get_id()), uniform_color_var_name.as_ptr()),
+            gl::GetUniformLocation(*s.get_id(), uniform_color_var_name.as_ptr()),
             color.x,
             color.y,
             color.z,
@@ -192,12 +195,13 @@ fn render_text(
 
             // update vbo for each character
             let vertices: [[f32; 4]; 6] = [
-                [xpos, ypos + h, 0.0, 0.0],
                 [xpos, ypos, 0.0, 1.0],
                 [xpos + w, ypos, 1.0, 1.0],
-                [xpos, ypos + h, 0.0, 0.0],
-                [xpos + w, ypos + h, 1.0, 1.0],
                 [xpos + w, ypos + h, 1.0, 0.0],
+
+                [xpos, ypos, 0.0, 1.0],
+                [xpos + w, ypos + h, 1.0, 0.0],
+                [xpos, ypos + h, 0.0, 0.0],
             ];
 
             // Render glyph texture over quad
@@ -311,6 +315,13 @@ unsafe fn draw_object_from_mem(vao: u32, ebo: u32) {
     gl::BindVertexArray(0);
 }
 
+fn check_gl_errors() {
+    let err = unsafe { gl::GetError() };
+    if err != gl::NO_ERROR {
+        println!("GL error: {:?}", err);
+    }
+}
+
 fn main() {
     let mut glfw = glfw::init_no_callbacks().unwrap();
     let (mut window, events) = glfw
@@ -324,41 +335,44 @@ fn main() {
 
     glfw::Window::set_framebuffer_size_callback(&mut window, framebuffer_size_callback);
 
+
+    init_opengl();
+
+
     // Make the window's context current
     window.make_current();
     window.set_key_polling(true);
 
-    init_opengl();
-
     unsafe {
+        gl::Enable(gl::CULL_FACE);
         gl::Viewport(0, 0, WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
     }
 
-    let rect_one_vertex_attribs: [f32; (NUM_VERTEX_ATTRIBS_RECT - 6) as usize] = [
-        // positions     // colors
-        -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, // bottom left
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, // bottom right
-        -1.0, 1.0, 0.0, 0.0, 0.0,
-        1.0, // top left
-             // 0.0,  1.0, 0.0, 0.0, 1.0, 0.0, // top right
-    ];
-
-    let rect_two_vertex_attribs: [f32; (NUM_VERTEX_ATTRIBS_RECT - 6) as usize] = [
-        // Positions    // Colors
-        0.0, -1.0, 0.0, 0.0, 0.0, 1.0, // bottom left
-        1.0, -1.0, 0.0, 0.0, 1.0, 0.0, // bottom right
-        0.0, 0.0, 0.0, 0.0, 1.0,
-        0.0, // top left
-             // 1.0,  0.0, 0.0, 1.0, 0.0, 0.0 // top right
-    ];
-
-    let rect_one_indices: [u32; 6] = [0, 1, 2, 1, 2, 3];
-
-    let rect_two_indices: [u32; 6] = [0, 1, 2, 1, 2, 3];
-
-    let (vao1, ebo1) = load_object_into_mem(rect_one_vertex_attribs, rect_one_indices);
-    let (vao2, ebo2) = load_object_into_mem(rect_two_vertex_attribs, rect_two_indices);
-
+    // let rect_one_vertex_attribs: [f32; (NUM_VERTEX_ATTRIBS_RECT - 6) as usize] = [
+    //     // positions     // colors
+    //     -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, // bottom left
+    //     0.0, 0.0, 0.0, 0.0, 1.0, 0.0, // bottom right
+    //     -1.0, 1.0, 0.0, 0.0, 0.0,
+    //     1.0, // top left
+    //          // 0.0,  1.0, 0.0, 0.0, 1.0, 0.0, // top right
+    // ];
+    //
+    // let rect_two_vertex_attribs: [f32; (NUM_VERTEX_ATTRIBS_RECT - 6) as usize] = [
+    //     // Positions    // Colors
+    //     0.0, -1.0, 0.0, 0.0, 0.0, 1.0, // bottom left
+    //     1.0, -1.0, 0.0, 0.0, 1.0, 0.0, // bottom right
+    //     0.0, 0.0, 0.0, 0.0, 1.0,
+    //     0.0, // top left
+    //          // 1.0,  0.0, 0.0, 1.0, 0.0, 0.0 // top right
+    // ];
+    //
+    // let rect_one_indices: [u32; 6] = [0, 1, 2, 1, 2, 3];
+    //
+    // let rect_two_indices: [u32; 6] = [0, 1, 2, 1, 2, 3];
+    //
+    // let (vao1, ebo1) = load_object_into_mem(rect_one_vertex_attribs, rect_one_indices);
+    // let (vao2, ebo2) = load_object_into_mem(rect_two_vertex_attribs, rect_two_indices);
+    //
     let dir = env::current_dir().expect("Could not get current directory");
 
     let vertex_path = dir.join("shader.vs");
@@ -373,6 +387,13 @@ fn main() {
         std::ffi::CString::new("projection").expect("Could not create C string");
     let projection: glm::Mat4 = glm::ortho(0.0, 800.0, 0.0, 600.0, -1.0, 1.0);
     unsafe {
+        shader.use_shader();
+        let current_program = {
+            let mut id = 0;
+            gl::GetIntegerv(gl::CURRENT_PROGRAM, &mut id);
+            id
+        };
+        println!("Current Program: {}", current_program);
         gl::UniformMatrix4fv(
             gl::GetUniformLocation(*shader.get_id(), uniform_projection_var_name.as_ptr()),
             1,
@@ -380,14 +401,19 @@ fn main() {
             projection.as_slice().as_ptr(),
         );
     }
+    check_gl_errors();
 
-    let (text_vao, text_vbo) = unsafe { make_text_vao_vbo() };
     let lib = init_freetype_lib();
     let font_path = std::ffi::CString::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
         .expect("Failed to create C string for font path");
     let face = create_ft_face(lib, &font_path);
+    unsafe { 
+        freetype::freetype::FT_Set_Pixel_Sizes(face, 0, 48);
+    }
     let characters = load_font_chars(lib, face);
 
+    let (text_vao, text_vbo) = unsafe { make_text_vao_vbo() };
+    // unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE); }
     // Loop until the user closes the window
     while !window.should_close() {
         window.swap_buffers();
@@ -406,25 +432,25 @@ fn main() {
         unsafe {
             gl::ClearColor(0.2, 0.3, 0.3, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
-            shader.use_shader();
-            let dt = glfw.get_time();
-            println!("{:?}", dt.sin() / 2.0 + 0.5);
-            let red: f64 = dt.sin() / 2.0 + 0.5;
-            let green: f64 = dt.sin() / 2.0 + 0.5;
-            let blue: f64 = dt.sin() / 2.0 + 0.5;
-            let color_uniform_name = std::ffi::CString::new("color").unwrap();
-            let vertex_color_location =
-                gl::GetUniformLocation(*shader.get_id(), color_uniform_name.as_ptr());
-            gl::Uniform4f(
-                vertex_color_location,
-                red as f32,
-                green as f32,
-                blue as f32,
-                1.0,
-            );
+            // shader.use_shader();
+            // let dt = glfw.get_time();
+            // println!("{:?}", dt.sin() / 2.0 + 0.5);
+            // let red: f64 = dt.sin() / 2.0 + 0.5;
+            // let green: f64 = dt.sin() / 2.0 + 0.5;
+            // let blue: f64 = dt.sin() / 2.0 + 0.5;
+            // let color_uniform_name = std::ffi::CString::new("color").unwrap();
+            // let vertex_color_location =
+            //     gl::GetUniformLocation(*shader.get_id(), color_uniform_name.as_ptr());
+            // gl::Uniform4f(
+            //     vertex_color_location,
+            //     red as f32,
+            //     green as f32,
+            //     blue as f32,
+            //     1.0,
+            // );
 
-            draw_object_from_mem(vao1, ebo1);
-            draw_object_from_mem(vao2, ebo2);
+            // draw_object_from_mem(vao1, ebo1);
+            // draw_object_from_mem(vao2, ebo2);
 
             render_text(
                 "Hey".to_string(),
@@ -436,6 +462,15 @@ fn main() {
                 text_vao,
                 text_vbo,
                 &characters,
+            );
+            render_text(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                540.0, 570.0, 0.5, 
+                glm::vec3(0.3, 0.7, 0.9),
+                &shader,
+                text_vao,
+                text_vbo,
+                &characters
             );
         }
     }
