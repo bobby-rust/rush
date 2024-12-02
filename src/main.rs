@@ -160,7 +160,7 @@ unsafe fn make_text_vao_vbo() -> (u32, u32) {
 
 fn render_text(
     text: String,
-    mut x: f32,
+    x: f32,
     y: f32,
     scale: f32,
     color: glm::Vec3,
@@ -217,7 +217,6 @@ fn render_text(
             gl::BindBuffer(gl::ARRAY_BUFFER, 0);
             // render quad
             gl::DrawArrays(gl::TRIANGLES, 0, 6);
-            x += (ch.advance >> 6) as f32 * scale;
         }
 
         gl::BindVertexArray(0);
@@ -322,6 +321,50 @@ fn check_gl_errors() {
     }
 }
 
+static mut PRESSED_KEY: Option<char> = None;
+fn key_to_char(key: glfw::Key) -> Option<char> {
+    match key {
+        glfw::Key::A => Some('A'),
+        glfw::Key::B => Some('B'),
+        glfw::Key::C => Some('C'),
+        glfw::Key::D => Some('D'),
+        glfw::Key::E => Some('E'),
+        glfw::Key::F => Some('F'),
+        glfw::Key::G => Some('G'),
+        glfw::Key::H => Some('H'),
+        glfw::Key::I => Some('I'),
+        glfw::Key::J => Some('J'),
+        glfw::Key::K => Some('K'),
+        glfw::Key::L => Some('L'),
+        glfw::Key::M => Some('M'),
+        glfw::Key::N => Some('N'),
+        glfw::Key::O => Some('O'),
+        glfw::Key::P => Some('P'),
+        glfw::Key::Q => Some('Q'),
+        glfw::Key::R => Some('R'),
+        glfw::Key::S => Some('S'),
+        glfw::Key::T => Some('T'),
+        glfw::Key::U => Some('U'),
+        glfw::Key::V => Some('V'),
+        glfw::Key::W => Some('W'),
+        glfw::Key::X => Some('X'),
+        glfw::Key::Y => Some('Y'),
+        glfw::Key::Z => Some('Z'),
+        _ => None 
+    }
+}
+
+// When a key is pressed, the x location of where to render the key changes
+fn key_callback(window: &mut glfw::Window, key: glfw::Key, scancode: i32, action: glfw::Action, modifiers: glfw::Modifiers, x: &mut f32, characters: &HashMap<char, Character>, scale: f32) {
+    if action == glfw::Action::Press || action == glfw::Action::Repeat {
+        unsafe { 
+            PRESSED_KEY = key_to_char(key);
+            let ch: &Character = characters.get(&PRESSED_KEY.unwrap()).unwrap();
+            *x += (ch.advance >> 6) as f32 * scale;
+        }
+    }
+}
+
 fn main() {
     let mut glfw = glfw::init_no_callbacks().unwrap();
     let (mut window, events) = glfw
@@ -414,13 +457,20 @@ fn main() {
 
     let (text_vao, text_vbo) = unsafe { make_text_vao_vbo() };
     // unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE); }
+    //
     // Loop until the user closes the window
+    let mut x = 0.0;
+    window.set_key_callback({
+        move |window, key, scancode, action, modifiers| {
+            key_callback(window, key, scancode, action, modifiers, &mut x, &characters, 1.0)
+        }
+    });
     while !window.should_close() {
         window.swap_buffers();
 
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
-            println!("{:?}", event);
+            
             match event {
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                     window.set_should_close(true);
@@ -432,6 +482,7 @@ fn main() {
         unsafe {
             gl::ClearColor(0.2, 0.3, 0.3, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
+
             // shader.use_shader();
             // let dt = glfw.get_time();
             // println!("{:?}", dt.sin() / 2.0 + 0.5);
@@ -452,9 +503,20 @@ fn main() {
             // draw_object_from_mem(vao1, ebo1);
             // draw_object_from_mem(vao2, ebo2);
 
+            // render_text(
+            //     "Hey".to_string(),
+            //     25.0,
+            //     25.0,
+            //     1.0,
+            //     glm::vec3(0.5, 0.8, 0.2),
+            //     &shader,
+            //     text_vao,
+            //     text_vbo,
+            //     &characters,
+            // );
             render_text(
-                "Hey".to_string(),
-                25.0,
+                PRESSED_KEY.unwrap().to_string(),
+                x,
                 25.0,
                 1.0,
                 glm::vec3(0.5, 0.8, 0.2),
@@ -462,15 +524,6 @@ fn main() {
                 text_vao,
                 text_vbo,
                 &characters,
-            );
-            render_text(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                540.0, 570.0, 0.5, 
-                glm::vec3(0.3, 0.7, 0.9),
-                &shader,
-                text_vao,
-                text_vbo,
-                &characters
             );
         }
     }
