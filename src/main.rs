@@ -7,7 +7,7 @@ extern crate glfw;
 extern crate nalgebra_glm;
 
 use freetype::freetype as ft;
-use glfw::{Action, Context, Key};
+use glfw::{Action, Context, Key, WindowEvent};
 use nalgebra_glm as glm;
 use shader::Shader;
 use std::collections::HashMap;
@@ -23,14 +23,28 @@ struct Character {
     advance: i64,
 }
 
-struct Cell {
-    width: f32,
-    height: f32,
+struct Grid {
+    rows: usize,
+    cols: usize,
+    cell_width: f32,
+    cell_height: f32,
 }
 
-struct Grid {
-    rows: u32,
-    cols: u32,
+struct Terminal {
+    grid: Grid,
+    buffer: String,
+    window: glfw::PWindow,
+    events: glfw::GlfwReceiver<(f64, WindowEvent)>,
+    glfw: glfw::Glfw,
+    font_vao: u32,
+    font_vbo: u32,
+    cursor_vbo: u32,
+    cursor_pos: (usize, usize), // Note that cursor_pos is always the location of the next
+    // available cell
+    font_characters: Rc<RefCell<HashMap<char, Character>>>,
+    font_shader: Rc<RefCell<Shader>>,
+    cursor_shader: Shader,
+    cursor_transform: Rc<RefCell<[[f32; 4]; 4]>>
 }
 
 fn init_freetype_lib() -> ft::FT_Library {
@@ -174,19 +188,11 @@ unsafe fn make_text_vao_vbo() -> (u32, u32) {
 }
 
 fn render_text(
-    text: String,
-    window_width: f32,
-    window_height: f32,
-    // x: f32,
-    // y: f32,
+    terminal: &Rc<RefCell<Terminal>>,
     scale: f32,
     color: glm::Vec3,
-    s: &Shader,
-    vao: u32,
-    vbo: u32,
-    characters: &HashMap<char, Character>,
 ) {
-    s.use_shader();
+    terminal.borrow().font_shader.borrow().use_shader();
     unsafe { gl::Enable(gl::CULL_FACE); };
 
     let mut x: f32 = 0.0;
@@ -197,33 +203,30 @@ fn render_text(
 
     unsafe {
         gl::Uniform3f(
-            gl::GetUniformLocation(*s.get_id(), uniform_color_var_name.as_ptr()),
+            gl::GetUniformLocation(*terminal.borrow().font_shader.borrow().get_id(), uniform_color_var_name.as_ptr()),
             color.x,
             color.y,
             color.z,
         );
 
         gl::ActiveTexture(gl::TEXTURE0);
-        gl::BindVertexArray(vao);
+        gl::BindVertexArray(terminal.borrow().font_vao);
 
-        let mut current_row = 0;
-        let mut current_column = 0;
-
-        for c in text.chars() {
-            let ch: &Character = characters.get(&c).unwrap();
+        for c in terminal.borrow().buffer.chars() {
+            let t = terminal.borrow();
+            let chars = t.font_characters.borrow();
+            let ch: &Character = chars.get(&c).unwrap();
 
             let w: f32 = ch.size.0 as f32 * scale;
             let h: f32 = ch.size.1 as f32 * scale;
+            let (window_width, window_height) = terminal.borrow().window.get_size();
 
-            let num_columns = (window_width / w) as usize;
-            let num_rows =    (window_width / h) as usize;
-
-            if (x + w) > window_width {
+            if (x + w) > window_width as f32 {
                 x = 0.0;
                 nlines += 1;
             }
 
-            let y = window_height - ((47.0 * scale) * nlines as f32) as f32; // 47 is the largest
+            let y = window_height as f32 - ((47.0 * scale) * nlines as f32) as f32; // 47 is the largest
             let xpos: f32 = x + ch.bearing.0 as f32 * scale;
             let ypos: f32 = y as f32 - ((ch.size.1 - ch.bearing.1) as f32 * scale);
             x += (ch.advance / 64) as f32 * scale;
@@ -234,16 +237,15 @@ fn render_text(
                 [xpos, ypos, 0.0, 1.0],
                 [xpos + w, ypos, 1.0, 1.0],
            
-               [xpos, ypos + h, 0.0, 0.0],
-               [xpos + w, ypos, 1.0, 1.0],
-               [xpos + w, ypos + h, 1.0, 0.0],
+                [xpos, ypos + h, 0.0, 0.0],
+                [xpos + w, ypos, 1.0, 1.0],
+                [xpos + w, ypos + h, 1.0, 0.0],
            ];
-
 
             // Render glyph texture over quad
             gl::BindTexture(gl::TEXTURE_2D, ch.texture_id);
             // update content of vbo memory
-            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+            gl::BindBuffer(gl::ARRAY_BUFFER, terminal.borrow().font_vbo);
             gl::BufferSubData(
                 gl::ARRAY_BUFFER,
                 0,
@@ -307,6 +309,7 @@ fn key_to_char(key: glfw::Key) -> Option<char> {
 fn translation_matrix(dx: f32, dy: f32, width: f32, height: f32) -> [[f32; 4]; 4] {
     let ndc_dx = dx / width * 2.0;
     let ndc_dy = dy / height * 2.0;
+
     [
         [1.0, 0.0, 0.0, ndc_dx],
         [0.0, 1.0, 0.0, ndc_dy],
@@ -334,7 +337,11 @@ fn render_cursor(s: &Shader, vao: u32, transform: [[f32; 4]; 4]) {
     }
 }
 
-fn calculate_translation_matrix(row: u32, col: u32, nrows: u32, ncols: u32, window_width: f32, window_height: f32) -> [[f32; 4]; 4] {
+
+/**
+ * Calculate the translation matrix for a cell in the grid.
+ */
+fn calculate_translation_matrix(row: usize, col: usize, nrows: usize, ncols: usize, window_width: f32, window_height: f32) -> [[f32; 4]; 4] {
     let scale_x = 2.0 / window_width;
     let scale_y = 2.0 / window_height;
 
@@ -390,20 +397,7 @@ fn make_cursor_vao_vbo_ebo() -> (u32, u32) {
     (vao, vbo)
 }
 
-fn main() {
-
-    let grid = Grid {
-        rows: 24,
-        cols: 80
-    };
-
-    let cell = Cell {
-        width: 800.0 / grid.cols as f32,
-        height: 600.0 / grid.rows as f32
-    };
-
-    let window_width = Rc::new(RefCell::new(800.0));
-    let window_height = Rc::new(RefCell::new(600.0));
+fn init_glfw(window_width: Rc<RefCell<f32>>, window_height: Rc<RefCell<f32>>) -> (glfw::Glfw, glfw::PWindow, glfw::GlfwReceiver<(f64, WindowEvent)>) {
     let mut glfw = glfw::init_no_callbacks().unwrap();
     let (mut window, events) = glfw
         .create_window(
@@ -414,11 +408,29 @@ fn main() {
         )
         .expect("Failed to create window.");
 
-    init_opengl();
-
     // Make the window's context current
     window.make_current();
     window.set_key_polling(true);
+
+    (glfw, window, events)
+}
+
+fn init() -> Terminal {
+    let window_width = Rc::new(RefCell::new(800.0));
+    let window_height = Rc::new(RefCell::new(600.0));
+    let nrows = 24;
+    let ncols = 80;
+
+    let grid = Grid {
+        rows: nrows,
+        cols: ncols,
+        cell_width: *window_width.borrow() / ncols as f32,
+        cell_height: *window_height.borrow() / nrows as f32
+    };
+
+    let (glfw, mut window, events) = init_glfw(window_width.clone(), window_height.clone());
+
+    init_opengl();
 
     unsafe {
         gl::Viewport(0, 0, *window_width.borrow() as i32, *window_height.borrow() as i32);
@@ -426,12 +438,10 @@ fn main() {
     
     let dir = env::current_dir().expect("Could not get current directory");
 
-    let text_vertex_path = dir.join("text_shader.vs");
-    let text_fragment_path = dir.join("text_shader.fs");
+    let font_vertex_path = dir.join("font_shader.vs");
+    let font_fragment_path = dir.join("font_shader.fs");
 
-    let text_shader = Rc::new(RefCell::new(
-        Shader::new(text_vertex_path.to_str().unwrap(), text_fragment_path.to_str().unwrap())
-    ));
+    let font_shader = Rc::new(RefCell::new(Shader::new(font_vertex_path.to_str().unwrap(), font_fragment_path.to_str().unwrap())));
     
     let cursor_vertex_path = dir.join("cursor_shader.vs");
     let cursor_fragment_path = dir.join("cursor_shader.fs");
@@ -442,24 +452,17 @@ fn main() {
         std::ffi::CString::new("projection").expect("Could not create C string");
     let uniform_transform_var_name =
         std::ffi::CString::new("transform").expect("Could not create C string");
+   
+    font_shader.borrow().use_shader();
+    set_uniform_mat4(&font_shader.borrow(), uniform_projection_var_name.clone(), glm::ortho(0.0, 800.0, 0.0, 600.0, -1.0, 1.0).into());
 
-    
-    text_shader.borrow().use_shader();
-    set_uniform_mat4(&*text_shader.borrow(), uniform_projection_var_name.clone(), glm::ortho(0.0, 800.0, 0.0, 600.0, -1.0, 1.0).into());
-
-    // let transform: [[f32; 4]; 4] = [
-    //     [0.05, 0.0, 0.0, 0.0],
-    //     [0.0, 0.1, 0.0, 0.0],
-    //     [0.0, 0.0, 1.0, 0.0],
-    //     [-0.9, 0.9, 0.0, 1.0],
-    // ];
-    //
-    let mut transform = Rc::new(RefCell::new(calculate_translation_matrix(10, 10, grid.rows, grid.cols, 800.0, 600.0)));
+    // TODO: Consider using orthographic projection for the cursor
+    let transform = Rc::new(RefCell::new(calculate_translation_matrix(10, 10, grid.rows, grid.cols, 800.0, 600.0)));
     cursor_shader.use_shader();
     set_uniform_mat4(&cursor_shader, uniform_transform_var_name, *transform.borrow());
 
     glfw::Window::set_framebuffer_size_callback(&mut window, {
-        let text_shader_clone = text_shader.clone();
+        let font_shader_clone = font_shader.clone();
         let window_width_clone = window_width.clone();
         let window_height_clone = window_height.clone();
         move |_window, width, height| {
@@ -468,7 +471,7 @@ fn main() {
             unsafe { 
                 gl::Viewport(0, 0, width.into(), height.into());
                 gl::UniformMatrix4fv(
-                    gl::GetUniformLocation(*text_shader_clone.borrow().get_id(), uniform_projection_var_name.as_ptr()),
+                    gl::GetUniformLocation(*font_shader_clone.borrow().get_id(), uniform_projection_var_name.as_ptr()),
                     1,
                     gl::FALSE,
                     glm::ortho(0.0, width as f32, 0.0, height as f32, -1.0, 1.0).as_slice().as_ptr(),
@@ -489,11 +492,9 @@ fn main() {
 
     let characters = load_font_chars(lib, face);
 
-    let (text_vao, text_vbo) = unsafe { make_text_vao_vbo() };
-    let (cursor_vao, cursor_vbo) = make_cursor_vao_vbo_ebo();
+    let (font_vao, font_vbo) = unsafe { make_text_vao_vbo() };
+    let (_, cursor_vbo) = make_cursor_vao_vbo_ebo();
 
-    // unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE); }
-    
     // Loop until the user closes the window
     let x = Rc::new(RefCell::new(0.0));
     let typed_text = Rc::new(RefCell::new(String::new()));
@@ -521,18 +522,31 @@ fn main() {
         }
     });
 
-    // unsafe { gl::Enable(gl::DEPTH_TEST); };
-    
-    check_gl_errors();
-    while !window.should_close() {
-        window.swap_buffers();
+    Terminal {
+        grid,
+        buffer: String::new(),
+        cursor_pos: (0, 0),
+        glfw,
+        events,
+        font_vao,
+        font_vbo,
+        cursor_vbo,
+        window,
+        font_shader,
+        font_characters: characters,
+        cursor_shader,
+        cursor_transform: transform
+    }
+}
 
-        glfw.poll_events();
-        for (_, event) in glfw::flush_messages(&events) {
-            
+fn tick(terminal: &Rc<RefCell<Terminal>>) {
+        terminal.borrow_mut().window.swap_buffers();
+
+        terminal.borrow_mut().glfw.poll_events();
+        for (_, event) in glfw::flush_messages(&terminal.borrow().events) {
             match event {
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                    window.set_should_close(true);
+                    terminal.borrow_mut().window.set_should_close(true);
                 }
                 _ => {}
             }
@@ -543,20 +557,20 @@ fn main() {
             gl::Clear(gl::COLOR_BUFFER_BIT);
 
             render_text(
-                typed_text.borrow().to_string(),
-                *window_width.borrow(),
-                *window_height.borrow(),
-                // *x.borrow_mut(),
-                // WINDOW_HEIGHT as f32 - 40.0,
+                &terminal,
                 0.5,
                 glm::vec3(0.5, 0.8, 0.2),
-                &text_shader.borrow(),
-                text_vao,
-                text_vbo,
-                &characters.borrow_mut(),
             );
-            render_cursor(&cursor_shader, cursor_vbo, *transform.borrow());
+            render_cursor(&terminal.borrow().cursor_shader, terminal.borrow().cursor_vbo, *terminal.borrow().cursor_transform.borrow());
         }
+}
+
+fn main() {
+    let terminal = Rc::new(RefCell::new(init()));
+    
+    check_gl_errors();
+    while !terminal.borrow().window.should_close() {
+        tick(&terminal);
     }
 }
 
