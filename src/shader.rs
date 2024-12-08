@@ -1,6 +1,8 @@
 use gl::types::*;
 use std::fs;
 
+
+#[derive(Clone)]
 pub struct Shader {
     id: u32
 }
