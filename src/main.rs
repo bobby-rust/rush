@@ -10,7 +10,6 @@ extern crate nalgebra_glm;
 
 use freetype::freetype as ft;
 use glfw::{Action, Context, Key, WindowEvent};
-use nalgebra_glm as glm;
 use shader::Shader;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -18,7 +17,6 @@ use std::env;
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::rc::Rc;
-
 
 struct Character {
     texture_id: u32,
@@ -79,7 +77,7 @@ impl WindowState {
 struct AppState {
     ts: TerminalState,
     ws: WindowState,
-    renderer: Renderer
+    renderer: Renderer,
 }
 
 struct TerminalState {
@@ -96,7 +94,9 @@ struct Renderer {
     font_vao: u32,
     font_vbo: u32,
     cursor_shader: Shader,
+    cursor_vao: u32,
     cursor_vbo: u32,
+    ebo: u32,
 }
 
 fn init_freetype_lib() -> ft::FT_Library {
@@ -221,97 +221,61 @@ unsafe fn make_text_vao_vbo() -> (u32, u32) {
     gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
     gl::BufferData(
         gl::ARRAY_BUFFER,
-        (std::mem::size_of::<f32>() * 6 * 4) as isize,
+        (std::mem::size_of::<f32>() * 4 * 5) as isize,
         std::ptr::null(),
         gl::DYNAMIC_DRAW,
     );
 
+    // Set the position attribute (3 floats per vertex for position)
     gl::EnableVertexAttribArray(0);
     gl::VertexAttribPointer(
         0,
-        4,
+        3,
         gl::FLOAT,
         gl::FALSE,
-        4 * std::mem::size_of::<f32>() as i32,
+        5 * std::mem::size_of::<f32>() as i32,
         std::ptr::null(),
     );
+    
+    // Set the texture coordinate attribute (2 floats per vertex for texture coords)
+    gl::EnableVertexAttribArray(1);
+    gl::VertexAttribPointer(
+        1,
+        2,
+        gl::FLOAT,
+        gl::FALSE,
+        5 * std::mem::size_of::<f32>() as i32,
+        (3 * std::mem::size_of::<f32>()) as *const c_void, // offset to the texture coords after
+        // the position data
+    );
+
     gl::BindBuffer(gl::ARRAY_BUFFER, 0);
     gl::BindVertexArray(0);
-
+    
+    println!("Text VAO: {}, VBO: {}", vao, vbo);
     (vao, vbo)
 }
 
-fn render_text(terminal: &TerminalState, renderer: &Renderer, scale: f32, color: glm::Vec3) {
-    renderer.font_shader.use_shader();
+fn render_text(s: &Shader, character: &Character, vertices: &[f32], indices: &[u32], vao: u32, vbo: u32, ebo: u32) {
+    println!("Render text: {}", vbo);
+    s.use_shader();
     unsafe {
-        gl::Enable(gl::CULL_FACE);
-    };
-
-    let mut x: f32 = 0.0;
-    let mut nlines = 1;
-
-    let uniform_color_var_name =
-        std::ffi::CString::new("textColor").expect("Could not create C string.");
-
-    unsafe {
-        gl::Uniform3f(
-            gl::GetUniformLocation(
-                *renderer.font_shader.get_id(),
-                uniform_color_var_name.as_ptr(),
-            ),
-            color.x,
-            color.y,
-            color.z,
-        );
-
         gl::ActiveTexture(gl::TEXTURE0);
-        gl::BindVertexArray(renderer.font_vao);
+        // Set the uniform to use texture unit 0
+        //let text_location = gl::GetUniformLocation(*s.get_id(), "text\0".as_ptr() as *const i8);
+        //gl::Uniform1i(text_location, 0);
+        gl::Enable(gl::CULL_FACE);
+        gl::Enable(gl::BLEND);
+        gl::BindTexture(gl::TEXTURE_2D, character.texture_id);
+        gl::BindVertexArray(vao);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
         
-        let chars = renderer.font_characters.borrow();
-        for c in terminal.buffer.chars() {
-            let ch: &Character = chars.get(&c).unwrap();
-            
-            let w: f32 = ch.size.0 as f32 * scale;
-            let h: f32 = ch.size.1 as f32 * scale;
-            let (window_width, window_height) = terminal.window.borrow().get_size();
-
-            if (x + w) > window_width as f32 {
-                x = 0.0;
-                nlines += 1;
-            }
-
-            let y = window_height as f32 - ((47.0 * scale) * nlines as f32) as f32; // 47 is the largest
-            let xpos: f32 = x + ch.bearing.0 as f32 * scale;
-            let ypos: f32 = y as f32 - ((ch.size.1 - ch.bearing.1) as f32 * scale);
-            x += (ch.advance / 64) as f32 * scale;
-
-            // update vbo for each character
-            let vertices: [[f32; 4]; 6] = [
-                [xpos, ypos + h, 0.0, 0.0],
-                [xpos, ypos, 0.0, 1.0],
-                [xpos + w, ypos, 1.0, 1.0],
-                [xpos, ypos + h, 0.0, 0.0],
-                [xpos + w, ypos, 1.0, 1.0],
-                [xpos + w, ypos + h, 1.0, 0.0],
-            ];
-
-            // Render glyph texture over quad
-            gl::BindTexture(gl::TEXTURE_2D, ch.texture_id);
-            // update content of vbo memory
-            gl::BindBuffer(gl::ARRAY_BUFFER, renderer.font_vbo);
-            gl::BufferSubData(
-                gl::ARRAY_BUFFER,
-                0,
-                std::mem::size_of::<[[f32; 4]; 6]>() as isize,
-                vertices.as_ptr() as *const c_void,
-            );
-            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
-            // render quad
-            gl::DrawArrays(gl::TRIANGLES, 0, 6);
-        }
-
-        gl::BindVertexArray(0);
-        gl::BindTexture(gl::TEXTURE_2D, 0);
+        check_gl_errors();
+        gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
+               
+        println!("Drawing elements");
+        gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
+        println!("Dre element");
     }
 }
 
@@ -324,6 +288,8 @@ fn check_gl_errors() {
     let err = unsafe { gl::GetError() };
     if err != gl::NO_ERROR {
         println!("GL error: {:?}", err);
+    } else {
+        println!("No GL errors");
     }
 }
 
@@ -381,11 +347,13 @@ fn set_uniform_mat4(s: &Shader, uniform_name: std::ffi::CString, transform: [[f3
 }
 
 fn render_cursor(s: &Shader, vao: u32) {
+    println!("Rendering cursor");
     s.use_shader();
     unsafe {
         gl::Disable(gl::CULL_FACE);
     };
-
+        
+    println!("Cursor VAO: {}", vao);
     unsafe {
         gl::BindVertexArray(vao);
         gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
@@ -420,7 +388,7 @@ fn calculate_translation_matrix(
     ]
 }
 
-fn make_cursor_vao_vbo_ebo() -> (u32, u32) {
+fn make_cursor_vao_vbo_ebo() -> (u32, u32, u32) {
     let mut vao: u32 = 0;
     let mut vbo: u32 = 0;
     let mut ebo: u32 = 0;
@@ -438,9 +406,11 @@ fn make_cursor_vao_vbo_ebo() -> (u32, u32) {
         gl::GenVertexArrays(1, &mut vao);
         gl::GenBuffers(1, &mut vbo);
         gl::GenBuffers(1, &mut ebo);
+        println!("ebo: {}", ebo);
         gl::BindVertexArray(vao);
 
         gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+        println!("Cursor vbo: {}", vbo);
         gl::BufferData(
             gl::ARRAY_BUFFER,
             (std::mem::size_of::<f32>() * vertices.len()) as isize,
@@ -449,9 +419,10 @@ fn make_cursor_vao_vbo_ebo() -> (u32, u32) {
         );
 
         gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
+        println!("Indices length: {}", indices.len());
         gl::BufferData(
             gl::ELEMENT_ARRAY_BUFFER,
-            (std::mem::size_of::<f32>() * indices.len()) as isize,
+            (std::mem::size_of::<u32>() * indices.len()) as isize,
             indices.as_ptr() as *const c_void,
             gl::STATIC_DRAW,
         );
@@ -470,11 +441,15 @@ fn make_cursor_vao_vbo_ebo() -> (u32, u32) {
         gl::BindVertexArray(0);
     }
 
-    (vao, vbo)
+    (vao, vbo, ebo)
 }
 
-fn calculate_cursor_vertices(window_width: f32, window_height: f32, cell: (usize, usize)) -> ([f32; 12], [u32; 6]) {
-   let (row, col) = cell;
+fn calculate_cursor_vertices(
+    _window_width: f32,
+    _window_height: f32,
+    cell: (usize, usize),
+) -> ([f32; 12], [u32; 6]) {
+    let (row, col) = cell;
 
     // Calculate cell size in normalized coordinates
     let cell_width = 2.0 / 80 as f32;
@@ -486,10 +461,18 @@ fn calculate_cursor_vertices(window_width: f32, window_height: f32, cell: (usize
 
     // Create the vertex positions for the cell
     let vertices = [
-        x, y + cell_height, 0.0,        // Top left
-        x + cell_width, y + cell_height, 0.0, // Top right
-        x, y, 0.0,                      // Bottom left
-        x + cell_width, y, 0.0,         // Bottom right
+        x,
+        y + cell_height,
+        0.0, // Top left
+        x + cell_width,
+        y + cell_height,
+        0.0, // Top right
+        x,
+        y,
+        0.0, // Bottom left
+        x + cell_width,
+        y,
+        0.0, // Bottom right
     ];
 
     // Define the indices for two triangles forming a rectangle
@@ -501,22 +484,64 @@ fn calculate_cursor_vertices(window_width: f32, window_height: f32, cell: (usize
     (vertices, indices)
 }
 
-fn set_renderer_vertices(renderer: &Renderer, vertices: &[f32], _indices: &[u32]) {
+fn calculate_textured_quad_vertices(
+    cell: (usize, usize),
+    character: &Character,
+    window_width: f32,
+    window_height: f32,
+) -> ([f32; 20], [u32; 6]) {
+
+    println!("character: {}", character.advance);
+    let (row, col) = cell;
+
+    let cell_width = 2.0 / 80.0;
+    let cell_height = 2.0 / 24.0;
+
+    let x = -1.0 + col as f32 * cell_width;
+    let y = 1.0 - (row as f32 + 1.0) * cell_height;
+
+    let (glyph_width, glyph_height) = character.size;
+    let (bearing_x, bearing_y) = character.bearing;
+    
+    let glyph_width_norm = glyph_width as f32 / window_width * 2.0;
+    let glyph_height_norm = glyph_height as f32 / window_height * 2.0;
+
+    let bearing_x_norm = bearing_x as f32 / window_width * 2.0;
+    let bearing_y_norm = bearing_y as f32 / window_height * 2.0;
+
+    let x_pos = x + bearing_x_norm;
+    let y_pos = y + cell_height - bearing_y_norm;
+
+    let vertices = [
+        x_pos, y_pos, 0.0, 0.0, 1.0, // Top left
+        x_pos + glyph_width_norm, y_pos, 0.0, 1.0, 1.0, // Top right
+        x_pos, y_pos - glyph_height_norm, 0.0, 0.0, 0.0, // Bottom left
+        x_pos + glyph_width_norm, y_pos - glyph_height_norm, 0.0, 1.0, 0.0, // Bottom right
+    ];
+
+    let indices = [
+        0, 1, 2, // First triangle
+        1, 2, 3, // Second triangle
+    ];
+
+    println!("Vertices: {:#?}", vertices);
+
+    (vertices, indices)
+}
+
+fn set_renderer_vertices(vao: u32, vbo: u32, vertices: &[f32], _indices: &[u32]) {
+    println!("Vertices length: {}", vertices.len());
     unsafe {
-        gl::BindBuffer(gl::ARRAY_BUFFER, renderer.cursor_vbo);
+        gl::BindVertexArray(vao);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
         gl::BufferData(
             gl::ARRAY_BUFFER,
             (std::mem::size_of::<f32>() * vertices.len()) as isize,
             vertices.as_ptr() as *const c_void,
             gl::STATIC_DRAW,
         );
-        // gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, renderer.ebo);
-        // gl::BufferData(
-        //     gl::ELEMENT_ARRAY_BUFFER,
-        //     (std::mem::size_of::<u32>() * indices.len()) as isize,
-        //     indices.as_ptr() as *const c_void,
-        //     gl::STATIC_DRAW,
-        // );
+
+        // ebo does not need to be updated because it is the same for both cursor and text 
     }
 }
 
@@ -561,23 +586,16 @@ fn init_glfw_opengl(
     (glfw, Rc::new(RefCell::new(window)), events)
 }
 
-fn init_shaders(dir: &std::path::Path, window_width: f32, window_height: f32) -> (Shader, Shader) {
+fn init_shaders(dir: &std::path::Path) -> (Shader, Shader) {
     let font_shader = Shader::new(
         dir.join("font_shader.vs").to_str().unwrap(),
         dir.join("font_shader.fs").to_str().unwrap(),
     );
-    font_shader.use_shader();
-    set_uniform_mat4(
-        &font_shader,
-        CString::new("projection").unwrap(),
-        glm::ortho(0.0, window_width, 0.0, window_height, -1.0, 1.0).into(),
-    );
-
+    
     let cursor_shader = Shader::new(
         dir.join("cursor_shader.vs").to_str().unwrap(),
         dir.join("cursor_shader.fs").to_str().unwrap(),
     );
-    cursor_shader.use_shader();
 
     (font_shader, cursor_shader)
 }
@@ -601,25 +619,20 @@ fn init_freetype(
 fn init() -> AppState {
     let dir = env::current_dir().expect("Could not get current directory");
     let (glfw, mut window, events) = init_glfw_opengl(800.0, 600.0);
-    let (font_shader, cursor_shader) = init_shaders(&dir, 800.0, 600.0);
+    let (font_shader, cursor_shader) = init_shaders(&dir);
     let (lib, face, characters) =
         init_freetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");
     let (font_vao, font_vbo) = unsafe { make_text_vao_vbo() };
-    let (_, cursor_vbo) = make_cursor_vao_vbo_ebo();
+    let (cursor_vao, cursor_vbo, ebo) = make_cursor_vao_vbo_ebo();
 
     // Set up window callbacks
     window.borrow_mut().set_framebuffer_size_callback({
         let font_shader = font_shader.clone();
         move |_window, width, height| unsafe {
             gl::Viewport(0, 0, width.into(), height.into());
-            set_uniform_mat4(
-                &font_shader,
-                CString::new("projection").unwrap(),
-                glm::ortho(0.0, width as f32, 0.0, height as f32, -1.0, 1.0).into(),
-            );
         }
     });
-    
+
     let mut ws = WindowState::new(800.0, 600.0);
     let app = AppState {
         ts: TerminalState {
@@ -633,10 +646,12 @@ fn init() -> AppState {
         renderer: Renderer {
             font_vao,
             font_vbo,
+            cursor_vao,
             cursor_vbo,
             font_shader,
             font_characters: characters.clone(),
             cursor_shader,
+            ebo
         },
     };
 
@@ -645,7 +660,7 @@ fn init() -> AppState {
         move |_window, key, _scancode, action, _modifiers| {
             if let Some(key_pressed) = key_to_char(key) {
                 if action == glfw::Action::Press {
-                    let ch: &Character = characters.borrow().get(&key_pressed).unwrap();
+                    let ch: &Character = characters.as_ref().borrow().get(&key_pressed).unwrap();
                     let scale = 1.0;
 
                     ws.buffer.push(key_pressed);
@@ -653,7 +668,7 @@ fn init() -> AppState {
             }
         }
     });
-    
+
     app
 }
 
@@ -661,37 +676,45 @@ fn tick(app: &mut AppState) {
     app.ts.window.borrow_mut().swap_buffers();
 
     app.ts.glfw.poll_events();
+    let (mut cursor_vertices, mut cursor_indices) = calculate_cursor_vertices(800.0, 600.0, app.ws.next_cell);
+    let (mut font_vertices, mut font_indices) = calculate_textured_quad_vertices(app.ws.next_cell, app.renderer.font_characters.borrow().get(&'a').unwrap(), 800.0, 600.0);
     for (_, event) in glfw::flush_messages(&app.ts.events) {
         match event {
             glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                 app.ts.window.borrow_mut().set_should_close(true);
-            },
+            }
             glfw::WindowEvent::Key(_, _, Action::Press | Action::Repeat, _) => {
                 app.ws.get_next_cell();
-                let (vbo, ebo) = calculate_cursor_vertices(app.ws.width, app.ws.height, app.ws.next_cell);
-                set_renderer_vertices(&app.renderer, &vbo, &ebo);
-            },
+                (font_vertices, font_indices) = calculate_textured_quad_vertices(app.ws.next_cell, app.renderer.font_characters.borrow().get(&'a').unwrap(), 800.0, 600.0);
+                (cursor_vertices, cursor_indices) = calculate_cursor_vertices(app.ws.width, app.ws.height, app.ws.next_cell);
+                
+            }
             _ => {}
         }
     }
-
+    
+    check_gl_errors();
     unsafe {
         gl::ClearColor(0.0, 0.0, 0.0, 1.0);
         gl::Clear(gl::COLOR_BUFFER_BIT);
-
-        // render_text(terminal, renderer, 0.5, glm::vec3(0.5, 0.8, 0.2));
-        render_cursor(
-            &app.renderer.cursor_shader,
-            app.renderer.cursor_vbo,
-        );
+        set_renderer_vertices(app.renderer.font_vao, app.renderer.font_vbo, &font_vertices, &font_indices);
+        println!("Set the renderer vertices");
+        check_gl_errors();
+        render_text(&app.renderer.font_shader, app.renderer.font_characters.borrow().get(&'a').unwrap(), &font_vertices, &font_indices, app.renderer.font_vao, app.renderer.font_vbo, app.renderer.ebo);
+        // println!("Rendered text");
+        app.renderer.cursor_shader.use_shader();
+        set_renderer_vertices(app.renderer.cursor_vao, app.renderer.cursor_vbo, &cursor_vertices, &cursor_indices);
+        render_cursor(&app.renderer.cursor_shader, app.renderer.cursor_vbo);
     }
 }
 
 fn main() {
-    let mut app = init();
-
+    let mut app: AppState = init();
     check_gl_errors();
-    while !app.ts.window.borrow().should_close() {
+    // let mut x = 0;
+    while !app.ts.window.as_ref().borrow().should_close() {
+        // println!("{}", x);
+        // x += 1;
         tick(&mut app);
     }
 }
