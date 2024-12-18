@@ -36,6 +36,9 @@ struct WindowState {
     width: f32,
     height: f32,
     grid: Grid,
+    // Keep one big buffer of the entire screen contents
+    // Cells for each character need not be kept in memory
+    // They can be derived from their location in the string
     buffer: String,
     next_cell: (usize, usize),
 }
@@ -56,6 +59,18 @@ impl WindowState {
         }
     }
 
+    fn advance(&mut self) {
+        if self.next_cell.1 == self.grid.cols - 1 {
+            self.next_cell = (self.next_cell.0 + 1, 0);
+        } else {
+            self.next_cell = (self.next_cell.0, self.next_cell.1 + 1);
+        }
+    }
+
+    fn reset_cell(&mut self) {
+        self.next_cell = (0, 0);
+    }
+
     fn update_size(&mut self, width: f32, height: f32) {
         self.width = width;
         self.height = height;
@@ -64,28 +79,21 @@ impl WindowState {
     }
 
     fn get_next_cell(&mut self) -> (usize, usize) {
-        if self.next_cell.1 == self.grid.cols - 1 {
-            self.next_cell = (self.next_cell.0 + 1, 0);
-        } else {
-            self.next_cell = (self.next_cell.0, self.next_cell.1 + 1);
-        }
-
         self.next_cell
     }
 }
 
 struct AppState {
     ts: TerminalState,
-    ws: WindowState,
+    ws: Rc<RefCell<WindowState>>,
     renderer: Renderer,
 }
 
 struct TerminalState {
-    buffer: String,
     window: Rc<RefCell<glfw::PWindow>>,
     events: glfw::GlfwReceiver<(f64, WindowEvent)>,
     glfw: glfw::Glfw,
-    cursor_pos: (usize, usize), // Note that cursor_pos is always the location of the next
+    cursor_pos: (usize, usize), // Note that cursor_pos is always the location
 }
 
 struct Renderer {
@@ -127,7 +135,7 @@ fn create_ft_face(lib: ft::FT_Library, font_path: &std::ffi::CStr) -> ft::FT_Fac
 fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Character> {
     let mut characters = HashMap::new();
     unsafe {
-        ft::FT_Set_Pixel_Sizes(face, 0, 25);
+        ft::FT_Set_Pixel_Sizes(face, 0, 48);
 
         gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
 
@@ -317,32 +325,50 @@ fn make_cursor_vao_vbo_ebo() -> (u32, u32, u32) {
     (vao, vbo, ebo)
 }
 
-fn render_text(s: &Shader, character: &Character, vao: u32, vbo: u32, ebo: u32) {
-    println!("Render text: {} {}", vao, vbo);
-    s.use_shader();
+fn render_screen_buffer(renderer: &Renderer, ws: Rc<RefCell<WindowState>>) {
+    println!("Rendering buffer: {}", ws.borrow().buffer);
+    ws.borrow_mut().reset_cell();
+    renderer.font_shader.use_shader();
+    // let program = renderer.font_shader.get_id();
     unsafe {
         // Enable blending
         gl::Enable(gl::BLEND);
         gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
-        // Set the active texture
-        gl::ActiveTexture(gl::TEXTURE0);
-        let text_location = gl::GetUniformLocation(*s.get_id(), b"text".as_ptr() as *const i8);
-        println!("text_location: {}", text_location);
-        gl::Uniform1i(text_location, 0);
-        // Bind the VAO
-        gl::BindVertexArray(vao);
+        // let text_location = gl::GetUniformLocation(*program, b"text".as_ptr() as *const i8);
+        // gl::Uniform1i(text_location, 0);
 
-        // Bind texture
-        gl::BindTexture(gl::TEXTURE_2D, character.texture_id);
+        let characters = renderer.font_characters.borrow();
+        let buf = ws.borrow().buffer.clone();
+        for c in buf.chars() {
+            let ftchar = characters.get(&c).unwrap();
 
-        // Bind the buffer
-        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-        gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
+            let (vertices, indices) = calculate_textured_quad_vertices(
+                ws.borrow_mut().get_next_cell(),
+                ftchar,
+                800.0,
+                600.0,
+            );
+            set_renderer_vertices(renderer.font_vao, renderer.font_vbo, &vertices, &indices);
 
-        check_gl_errors();
+            // Set the active texture
+            gl::ActiveTexture(gl::TEXTURE0);
 
-        gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
+            // Bind the VAO
+            gl::BindVertexArray(renderer.font_vao);
+
+            // Bind texture
+            gl::BindTexture(gl::TEXTURE_2D, ftchar.texture_id);
+
+            // Bind the buffer
+            gl::BindBuffer(gl::ARRAY_BUFFER, renderer.font_vbo);
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, renderer.ebo);
+
+            // check_gl_errors();
+
+            gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
+            ws.borrow_mut().advance();
+        }
     }
 }
 
@@ -414,13 +440,11 @@ fn set_uniform_mat4(s: &Shader, uniform_name: std::ffi::CString, transform: [[f3
 }
 
 fn render_cursor(s: &Shader, vao: u32) {
-    println!("Rendering cursor");
     s.use_shader();
     unsafe {
         gl::Disable(gl::CULL_FACE);
     };
 
-    println!("Cursor VAO: {}", vao);
     unsafe {
         gl::BindVertexArray(vao);
         gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
@@ -470,9 +494,9 @@ fn calculate_cursor_vertices(
 
 fn calculate_textured_quad_vertices(
     cell: (usize, usize),
-    character: &Character,
-    window_width: f32,
-    window_height: f32,
+    _character: &Character,
+    _window_width: f32,
+    _window_height: f32,
 ) -> ([f32; 20], [u32; 6]) {
     let (row, col) = cell;
 
@@ -484,42 +508,6 @@ fn calculate_textured_quad_vertices(
     let x = -1.0 + col as f32 * cell_width;
     let y = 1.0 - (row as f32 + 1.0) * cell_height;
 
-    // // Glyph dimensions and bearing
-    // let (glyph_width, glyph_height) = character.size;
-    // let (bearing_x, bearing_y) = character.bearing;
-    //
-    // // Normalize dimensions
-    // let glyph_width_norm = glyph_width as f32 / window_width * 2.0;
-    // let glyph_height_norm = glyph_height as f32 / window_height * 2.0;
-    //
-    // // Apply bearing offsets only to quad size/position
-    // let x_pos_with_bearing = x + (bearing_x as f32 / window_width * 2.0);
-    // let y_pos_with_bearing = y - (bearing_y as f32 / window_height * 2.0);
-
-    // Vertices for the quad
-    // let vertices = [
-    //     x_pos_with_bearing,
-    //     y_pos_with_bearing,
-    //     0.0,
-    //     0.0,
-    //     0.0, // Top left
-    //     x_pos_with_bearing + glyph_width_norm,
-    //     y_pos_with_bearing,
-    //     0.0,
-    //     1.0,
-    //     0.0, // Top right
-    //     x_pos_with_bearing,
-    //     y_pos_with_bearing - glyph_height_norm,
-    //     0.0,
-    //     0.0,
-    //     1.0, // Bottom left
-    //     x_pos_with_bearing + glyph_width_norm,
-    //     y_pos_with_bearing - glyph_height_norm,
-    //     0.0,
-    //     1.0,
-    //     1.0, // Bottom right
-    // ];
-    //
     let vertices = [
         x,
         y + cell_height,
@@ -542,14 +530,6 @@ fn calculate_textured_quad_vertices(
         1.0,
         1.0,
     ];
-
-    // Debug vertices
-    // let vertices = [
-    //     -0.5, 0.5, 0.0, 0.0, 0.0, // Top left
-    //     0.5, 0.5, 0.0, 1.0, 0.0, // Top right
-    //     -0.5, -0.5, 0.0, 0.0, 1.0, // Bottom left
-    //     0.5, -0.5, 0.0, 1.0, 1.0, // Bottom right
-    // ];
 
     let indices = [
         0, 1, 2, // First triangle
@@ -665,16 +645,14 @@ fn init() -> AppState {
     });
 
     let mut ws = WindowState::new(800.0, 600.0);
-    println!("cell height: {}", ws.grid.cell_height);
     let app = AppState {
         ts: TerminalState {
-            buffer: String::new(),
             cursor_pos: (0, 0),
             glfw,
             events,
             window: window.to_owned(),
         },
-        ws: WindowState::new(800.0, 600.0),
+        ws: Rc::new(RefCell::new(WindowState::new(800.0, 600.0))),
         renderer: Renderer {
             font_vao,
             font_vbo,
@@ -692,8 +670,8 @@ fn init() -> AppState {
         move |_window, key, _scancode, action, _modifiers| {
             if let Some(key_pressed) = key_to_char(key) {
                 if action == glfw::Action::Press {
-                    let ch: &Character = characters.as_ref().borrow().get(&key_pressed).unwrap();
-                    let scale = 1.0;
+                    // let ch: &Character = characters.as_ref().borrow().get(&key_pressed).unwrap();
+                    // let scale = 1.0;
 
                     ws.buffer.push(key_pressed);
                 }
@@ -708,29 +686,17 @@ fn tick(app: &mut AppState) {
     app.ts.window.borrow_mut().swap_buffers();
 
     app.ts.glfw.poll_events();
-    let (mut cursor_vertices, mut cursor_indices) =
-        calculate_cursor_vertices(800.0, 600.0, app.ws.next_cell);
-    let (mut font_vertices, mut font_indices) = calculate_textured_quad_vertices(
-        app.ws.next_cell,
-        app.renderer.font_characters.borrow().get(&'g').unwrap(),
-        800.0,
-        600.0,
-    );
+
     for (_, event) in glfw::flush_messages(&app.ts.events) {
         match event {
             glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                 app.ts.window.borrow_mut().set_should_close(true);
             }
-            glfw::WindowEvent::Key(_, _, Action::Press | Action::Repeat, _) => {
-                app.ws.get_next_cell();
-                (font_vertices, font_indices) = calculate_textured_quad_vertices(
-                    app.ws.next_cell,
-                    app.renderer.font_characters.borrow().get(&'g').unwrap(),
-                    800.0,
-                    600.0,
-                );
-                (cursor_vertices, cursor_indices) =
-                    calculate_cursor_vertices(app.ws.width, app.ws.height, app.ws.next_cell);
+            glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
+                if let Some(ch) = key_to_char(key) {
+                    let mut ws = app.ws.borrow_mut();
+                    ws.buffer.push(ch);
+                }
             }
             _ => {}
         }
@@ -741,28 +707,9 @@ fn tick(app: &mut AppState) {
         //gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE);
         gl::ClearColor(0.0, 0.0, 0.0, 1.0);
         gl::Clear(gl::COLOR_BUFFER_BIT);
-        set_renderer_vertices(
-            app.renderer.font_vao,
-            app.renderer.font_vbo,
-            &font_vertices,
-            &font_indices,
-        );
-        check_gl_errors();
-        render_text(
-            &app.renderer.font_shader,
-            app.renderer.font_characters.borrow().get(&'g').unwrap(),
-            app.renderer.font_vao,
-            app.renderer.font_vbo,
-            app.renderer.ebo,
-        );
-        // println!("Rendered text");
-        app.renderer.cursor_shader.use_shader();
-        set_renderer_vertices(
-            app.renderer.cursor_vao,
-            app.renderer.cursor_vbo,
-            &cursor_vertices,
-            &cursor_indices,
-        );
+
+        render_screen_buffer(&app.renderer, app.ws.clone());
+
         // render_cursor(&app.renderer.cursor_shader, app.renderer.cursor_vbo);
     }
 }
@@ -770,10 +717,7 @@ fn tick(app: &mut AppState) {
 fn main() {
     let mut app: AppState = init();
     check_gl_errors();
-    // let mut x = 0;
     while !app.ts.window.as_ref().borrow().should_close() {
-        // println!("{}", x);
-        // x += 1;
         tick(&mut app);
     }
 }
