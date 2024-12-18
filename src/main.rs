@@ -135,7 +135,7 @@ fn create_ft_face(lib: ft::FT_Library, font_path: &std::ffi::CStr) -> ft::FT_Fac
 fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Character> {
     let mut characters = HashMap::new();
     unsafe {
-        ft::FT_Set_Pixel_Sizes(face, 0, 48);
+        ft::FT_Set_Pixel_Sizes(face, 0, 12);
 
         gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
 
@@ -157,6 +157,8 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
             if glyph.advance.x > max_advance {
                 max_advance = glyph.advance.x;
             }
+
+            println!("Advance for {}: {}", c, glyph.metrics.horiAdvance);
 
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
@@ -389,32 +391,32 @@ fn check_gl_errors() {
 #[allow(unused)]
 fn key_to_char(key: glfw::Key) -> Option<char> {
     match key {
-        glfw::Key::A => Some('A'),
-        glfw::Key::B => Some('B'),
-        glfw::Key::C => Some('C'),
-        glfw::Key::D => Some('D'),
-        glfw::Key::E => Some('E'),
-        glfw::Key::F => Some('F'),
-        glfw::Key::G => Some('G'),
-        glfw::Key::H => Some('H'),
-        glfw::Key::I => Some('I'),
-        glfw::Key::J => Some('J'),
-        glfw::Key::K => Some('K'),
-        glfw::Key::L => Some('L'),
-        glfw::Key::M => Some('M'),
-        glfw::Key::N => Some('N'),
-        glfw::Key::O => Some('O'),
-        glfw::Key::P => Some('P'),
-        glfw::Key::Q => Some('Q'),
-        glfw::Key::R => Some('R'),
-        glfw::Key::S => Some('S'),
-        glfw::Key::T => Some('T'),
-        glfw::Key::U => Some('U'),
-        glfw::Key::V => Some('V'),
-        glfw::Key::W => Some('W'),
-        glfw::Key::X => Some('X'),
-        glfw::Key::Y => Some('Y'),
-        glfw::Key::Z => Some('Z'),
+        glfw::Key::A => Some('a'),
+        glfw::Key::B => Some('b'),
+        glfw::Key::C => Some('c'),
+        glfw::Key::D => Some('d'),
+        glfw::Key::E => Some('e'),
+        glfw::Key::F => Some('f'),
+        glfw::Key::G => Some('g'),
+        glfw::Key::H => Some('h'),
+        glfw::Key::I => Some('i'),
+        glfw::Key::J => Some('j'),
+        glfw::Key::K => Some('k'),
+        glfw::Key::L => Some('l'),
+        glfw::Key::M => Some('m'),
+        glfw::Key::N => Some('n'),
+        glfw::Key::O => Some('o'),
+        glfw::Key::P => Some('p'),
+        glfw::Key::Q => Some('q'),
+        glfw::Key::R => Some('r'),
+        glfw::Key::S => Some('s'),
+        glfw::Key::T => Some('t'),
+        glfw::Key::U => Some('u'),
+        glfw::Key::V => Some('v'),
+        glfw::Key::W => Some('w'),
+        glfw::Key::X => Some('x'),
+        glfw::Key::Y => Some('y'),
+        glfw::Key::Z => Some('z'),
         _ => None,
     }
 }
@@ -494,9 +496,9 @@ fn calculate_cursor_vertices(
 
 fn calculate_textured_quad_vertices(
     cell: (usize, usize),
-    _character: &Character,
-    _window_width: f32,
-    _window_height: f32,
+    character: &Character,
+    window_width: f32,
+    window_height: f32,
 ) -> ([f32; 20], [u32; 6]) {
     let (row, col) = cell;
 
@@ -505,27 +507,56 @@ fn calculate_textured_quad_vertices(
     let cell_height = 2.0 / 24.0;
 
     // Top-left corner of the cell
-    let x = -1.0 + col as f32 * cell_width;
-    let y = 1.0 - (row as f32 + 1.0) * cell_height;
+    let cell_x = -1.0 + col as f32 * cell_width;
+    let cell_y = 1.0 - (row as f32 + 1.0) * cell_height;
+
+    let normalized_advance = (character.advance >> 6) as f32 / (window_width * 2.0);
+
+    let usable_cell_width = cell_width - normalized_advance;
+
+    println!(
+        "Usable cell width: {}, normalized advance: {}, cell_width: {}",
+        usable_cell_width, normalized_advance, cell_width
+    );
+    // Character dimensions
+    let mut char_width = character.size.0 as f32 / window_width * 2.0;
+    let mut char_height = character.size.1 as f32 / window_height * 2.0;
+
+    if char_width > usable_cell_width {
+        char_width = usable_cell_width;
+    }
+    if char_height > cell_height {
+        // let scale = cell_height / char_height;
+        // char_width *= scale;
+        char_height = cell_height;
+    }
+    // Center the character within the cell
+    let char_x = cell_x + (cell_width - char_width) / 2.0;
+    let char_y = cell_y + (cell_height - char_height) / 2.0;
+
+    // println!(
+    //     "char_x: {}, char_y: {}, char_width: {}, char_height: {}, cell_width: {}, cell_height: {}",
+    //     char_x, char_y, char_width, char_height, cell_width, cell_height
+    // );
 
     let vertices = [
-        x,
-        y + cell_height,
+        char_x,
+        char_y + char_height,
         0.0,
         0.0,
         0.0,
-        x + cell_width,
-        y + cell_height,
-        0.0,
-        1.0,
-        0.0,
-        x,
-        y,
-        0.0,
+        char_x + char_width,
+        char_y + char_height,
         0.0,
         1.0,
-        x + cell_width,
-        y,
+        0.0,
+        char_x,
+        char_y,
+        0.0,
+        0.0,
+        1.0,
+        char_x + char_width,
+        char_y,
         0.0,
         1.0,
         1.0,
