@@ -9,8 +9,8 @@ extern crate glfw;
 extern crate nalgebra_glm;
 
 use freetype::freetype as ft;
-use glfw::{Action, Context, Key, WindowEvent};
 use shader::Shader;
+use glfw::Context;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -91,7 +91,7 @@ struct AppState {
 
 struct TerminalState {
     window: Rc<RefCell<glfw::PWindow>>,
-    events: glfw::GlfwReceiver<(f64, WindowEvent)>,
+    events: glfw::GlfwReceiver<(f64, glfw::WindowEvent)>,
     glfw: glfw::Glfw,
     cursor_pos: (usize, usize), // Note that cursor_pos is always the location
 }
@@ -158,7 +158,6 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
                 max_advance = glyph.advance.x;
             }
 
-            println!("Advance for {}: {}", c, glyph.metrics.horiAdvance);
 
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
@@ -328,17 +327,13 @@ fn make_cursor_vao_vbo_ebo() -> (u32, u32, u32) {
 }
 
 fn render_screen_buffer(renderer: &Renderer, ws: Rc<RefCell<WindowState>>) {
-    println!("Rendering buffer: {}", ws.borrow().buffer);
     ws.borrow_mut().reset_cell();
     renderer.font_shader.use_shader();
-    // let program = renderer.font_shader.get_id();
+
     unsafe {
         // Enable blending
         gl::Enable(gl::BLEND);
         gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-
-        // let text_location = gl::GetUniformLocation(*program, b"text".as_ptr() as *const i8);
-        // gl::Uniform1i(text_location, 0);
 
         let characters = renderer.font_characters.borrow();
         let buf = ws.borrow().buffer.clone();
@@ -384,11 +379,41 @@ fn check_gl_errors() {
     if err != gl::NO_ERROR {
         println!("GL error: {:?}", err);
     } else {
-        println!("No GL errors");
+        // println!("No GL errors");
     }
 }
 
-#[allow(unused)]
+fn key_to_capital_char(key: glfw::Key) -> Option<char> {
+    match key {
+        glfw::Key::A => Some('A'),
+        glfw::Key::B => Some('B'),
+        glfw::Key::C => Some('C'),
+        glfw::Key::D => Some('D'),
+        glfw::Key::E => Some('E'),
+        glfw::Key::F => Some('F'),
+        glfw::Key::G => Some('G'),
+        glfw::Key::H => Some('H'),
+        glfw::Key::I => Some('I'),
+        glfw::Key::J => Some('J'),
+        glfw::Key::K => Some('K'),
+        glfw::Key::L => Some('L'),
+        glfw::Key::M => Some('M'),
+        glfw::Key::N => Some('N'),
+        glfw::Key::O => Some('O'),
+        glfw::Key::P => Some('P'),
+        glfw::Key::Q => Some('Q'),
+        glfw::Key::R => Some('R'),
+        glfw::Key::S => Some('S'),
+        glfw::Key::T => Some('T'),
+        glfw::Key::U => Some('U'),
+        glfw::Key::V => Some('V'),
+        glfw::Key::W => Some('W'),
+        glfw::Key::X => Some('X'),
+        glfw::Key::Y => Some('Y'),
+        glfw::Key::Z => Some('Z'),
+        _ => None,
+    }
+}
 fn key_to_char(key: glfw::Key) -> Option<char> {
     match key {
         glfw::Key::A => Some('a'),
@@ -417,6 +442,37 @@ fn key_to_char(key: glfw::Key) -> Option<char> {
         glfw::Key::X => Some('x'),
         glfw::Key::Y => Some('y'),
         glfw::Key::Z => Some('z'),
+        _ => None,
+    }
+}
+
+fn key_to_symbol(key: glfw::Key) -> Option<char> {
+    match key {
+        glfw::Key::Num1 => Some('1'),
+        glfw::Key::Num2 => Some('2'),
+        glfw::Key::Num3 => Some('3'),
+        glfw::Key::Num4 => Some('4'),
+        glfw::Key::Num5 => Some('5'),
+        glfw::Key::Num6 => Some('6'),
+        glfw::Key::Num7 => Some('7'),
+        glfw::Key::Num8 => Some('8'),
+        glfw::Key::Num9 => Some('9'),
+        glfw::Key::Num0 => Some('0'),
+        glfw::Key::Semicolon => Some(';'),
+        glfw::Key::Comma => Some(','),
+        glfw::Key::Period => Some('.'),
+        glfw::Key::Slash => Some('/'),
+        glfw::Key::Minus => Some('-'),
+        glfw::Key::Equal => Some('='),
+        glfw::Key::LeftBracket => Some('['),
+        glfw::Key::RightBracket => Some(']'),
+        glfw::Key::Backslash => Some('\\'),
+        glfw::Key::GraveAccent => Some('`'),
+        glfw::Key::Apostrophe => Some('\''),
+        glfw::Key::Tab => Some('\t'),
+        glfw::Key::Enter => Some('\n'),
+        glfw::Key::Space => Some(' '),
+        glfw::Key::Backspace => Some('_'),
         _ => None,
     }
 }
@@ -514,10 +570,6 @@ fn calculate_textured_quad_vertices(
 
     let usable_cell_width = cell_width - normalized_advance;
 
-    println!(
-        "Usable cell width: {}, normalized advance: {}, cell_width: {}",
-        usable_cell_width, normalized_advance, cell_width
-    );
     // Character dimensions
     let mut char_width = character.size.0 as f32 / window_width * 2.0;
     let mut char_height = character.size.1 as f32 / window_height * 2.0;
@@ -530,14 +582,13 @@ fn calculate_textured_quad_vertices(
         // char_width *= scale;
         char_height = cell_height;
     }
+
+    let baseline_offset = character.bearing.1 as f32 / window_height * 2.0;
+
     // Center the character within the cell
     let char_x = cell_x + (cell_width - char_width) / 2.0;
-    let char_y = cell_y + (cell_height - char_height) / 2.0;
+    let char_y = cell_y + baseline_offset - char_height;
 
-    // println!(
-    //     "char_x: {}, char_y: {}, char_width: {}, char_height: {}, cell_width: {}, cell_height: {}",
-    //     char_x, char_y, char_width, char_height, cell_width, cell_height
-    // );
 
     let vertices = [
         char_x,
@@ -593,7 +644,7 @@ fn init_glfw(
 ) -> (
     glfw::Glfw,
     glfw::PWindow,
-    glfw::GlfwReceiver<(f64, WindowEvent)>,
+    glfw::GlfwReceiver<(f64, glfw::WindowEvent)>,
 ) {
     let mut glfw = glfw::init_no_callbacks().unwrap();
     let (mut window, events) = glfw
@@ -608,7 +659,11 @@ fn init_glfw(
     // Make the window's context current
     window.make_current();
     window.set_key_polling(true);
-
+    unsafe { 
+        glfw::ffi::glfwSetInputMode(glfw::Window::window_ptr(&window), glfw::ffi::LOCK_KEY_MODS, glfw::ffi::TRUE);
+    };
+    
+    
     (glfw, window, events)
 }
 
@@ -720,14 +775,49 @@ fn tick(app: &mut AppState) {
 
     for (_, event) in glfw::flush_messages(&app.ts.events) {
         match event {
-            glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
+            glfw::WindowEvent::Key(glfw::Key::Escape, _, glfw::Action::Press, _) => {
                 app.ts.window.borrow_mut().set_should_close(true);
             }
-            glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
-                if let Some(ch) = key_to_char(key) {
-                    let mut ws = app.ws.borrow_mut();
-                    ws.buffer.push(ch);
+
+            glfw::WindowEvent::Key(key, _, glfw::Action::Press | glfw::Action::Repeat, modifiers) => {
+                let mut ws = app.ws.borrow_mut();
+                let ch; 
+                if modifiers.contains(glfw::Modifiers::Shift) && modifiers.contains(glfw::Modifiers::CapsLock) {
+                    if key > glfw::Key::Z || key < glfw::Key::A { 
+                        ch = key_to_symbol(key); 
+                    } else {
+                        ch = key_to_char(key); 
+                    }
+                } else if modifiers.contains(glfw::Modifiers::Shift) || modifiers.contains(glfw::Modifiers::CapsLock) {
+                    if key > glfw::Key::Z || key < glfw::Key::A { 
+                        ch = key_to_symbol(key); 
+                    } else {
+                        ch = key_to_capital_char(key);
+                    }
+                } else {
+                    if key > glfw::Key::Z || key < glfw::Key::A { 
+                        ch = key_to_symbol(key); 
+                    } else {
+                        ch = key_to_char(key);
+                    }
                 }
+                
+                if ch == None { 
+                    println!("Unrecognized key: {:?}", key);
+                    return 
+                };
+
+                let c = ch.unwrap();
+
+                match key {
+                    glfw::Key::Backspace => {
+                        ws.buffer.pop();
+                    }
+                    _ => {
+                        ws.buffer.push(c);
+                    }
+                }
+                
             }
             _ => {}
         }
