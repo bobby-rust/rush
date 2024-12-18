@@ -78,7 +78,7 @@ impl WindowState {
         self.grid.cols = (self.width / self.grid.cell_width) as usize;
     }
 
-    fn get_next_cell(&mut self) -> (usize, usize) {
+    fn get_next_cell(&self) -> (usize, usize) {
         self.next_cell
     }
 }
@@ -741,7 +741,19 @@ fn tick(app: &mut AppState) {
 
         render_screen_buffer(&app.renderer, app.ws.clone());
 
-        // render_cursor(&app.renderer.cursor_shader, app.renderer.cursor_vbo);
+        let (cursor_vertices, cursor_indices) = calculate_cursor_vertices(
+            app.ws.borrow().width,
+            app.ws.borrow().height,
+            app.ws.borrow().get_next_cell(),
+        );
+
+        set_renderer_vertices(
+            app.renderer.cursor_vao,
+            app.renderer.cursor_vbo,
+            &cursor_vertices,
+            &cursor_indices,
+        );
+        render_cursor(&app.renderer.cursor_shader, app.renderer.cursor_vbo);
     }
 }
 
