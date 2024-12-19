@@ -32,6 +32,12 @@ struct Grid {
     cell_height: f32,
 }
 
+impl std::fmt::Display for Grid {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Grid {{ rows: {}, cols: {}, cell_width: {}, cell_height: {} }}", self.rows, self.cols, self.cell_width, self.cell_height)
+    }
+}
+
 struct WindowState {
     width: f32,
     height: f32,
@@ -44,15 +50,17 @@ struct WindowState {
 }
 
 impl WindowState {
-    fn new(width: f32, height: f32) -> WindowState {
+    fn new(width: f32, height: f32, char_dimensions: CharacterDimensions) -> WindowState {
+        let cell_width = char_dimensions.width as f32;
+        let cell_height = char_dimensions.height as f32;
         WindowState {
             width,
             height,
             grid: Grid {
-                rows: 24,
-                cols: 80,
-                cell_width: width / 80.0,
-                cell_height: height / 24.0,
+                cell_width,
+                cell_height,
+                rows: width as usize / cell_width as usize,
+                cols: height as usize / cell_height as usize,
             },
             buffer: String::new(),
             next_cell: (0, 0),
@@ -97,6 +105,7 @@ struct TerminalState {
 }
 
 struct Renderer {
+    font_size_px: u32,
     font_shader: Shader,
     font_characters: Rc<RefCell<HashMap<char, Character>>>,
     font_vao: u32,
@@ -105,6 +114,11 @@ struct Renderer {
     cursor_vao: u32,
     cursor_vbo: u32,
     ebo: u32,
+}
+
+struct CharacterDimensions {
+    width: u32,
+    height: u32
 }
 
 fn init_freetype_lib() -> ft::FT_Library {
@@ -132,15 +146,15 @@ fn create_ft_face(lib: ft::FT_Library, font_path: &std::ffi::CStr) -> ft::FT_Fac
     face
 }
 
-fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Character> {
+fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face, font_size_px: u32) -> (HashMap<char, Character>, i64, i64) {
     let mut characters = HashMap::new();
+    let mut max_advance = 0; // used to calculate the width of cells
+    let mut max_height = 0;
     unsafe {
-        ft::FT_Set_Pixel_Sizes(face, 0, 12);
+        ft::FT_Set_Pixel_Sizes(face, 0, font_size_px);
 
         gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
 
-        let mut max_advance = 0; // advance is used as width
-        let mut max_height = 0;
         for c in 0..127 {
             let error = ft::FT_Load_Char(face, c, ft::FT_LOAD_RENDER as i32);
             if error != 0 {
@@ -163,8 +177,7 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
             gl::BindTexture(gl::TEXTURE_2D, texture);
             gl::TexImage2D(
                 gl::TEXTURE_2D,
-                0,
-                gl::RED.try_into().unwrap(),
+                0, gl::RED.try_into().unwrap(),
                 glyph.bitmap.width.try_into().unwrap(),
                 glyph.bitmap.rows.try_into().unwrap(),
                 0,
@@ -214,7 +227,7 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face) -> HashMap<char, Char
         ft::FT_Done_Library(lib);
     };
 
-    characters
+    (characters, max_advance, max_height)
 }
 
 unsafe fn make_text_vao_vbo() -> (u32, u32) {
@@ -587,7 +600,11 @@ fn calculate_textured_quad_vertices(
 
     // Center the character within the cell
     let char_x = cell_x + (cell_width - char_width) / 2.0;
-    let char_y = cell_y + baseline_offset - char_height;
+    // Add 20% of the cell's height to the character's ypos,
+    // maybe not the perfect solution but it works for now
+    // Without the 20%, the baseline is rendered at the bottom of the cell,
+    // so glyphs that go under the baseline overflow the cell
+    let char_y = cell_y + baseline_offset - char_height + (cell_height * 0.2);
 
 
     let vertices = [
@@ -699,26 +716,32 @@ fn init_shaders(dir: &std::path::Path) -> (Shader, Shader) {
 
 fn init_freetype(
     font_path: &str,
+    font_size_px: u32
 ) -> (
     freetype::freetype::FT_Library,
     freetype::freetype::FT_Face,
     Rc<RefCell<HashMap<char, Character>>>,
+    CharacterDimensions
 ) {
     let lib = init_freetype_lib();
     let c_font_path = CString::new(font_path).unwrap();
     let face = create_ft_face(lib, &c_font_path);
-    unsafe { freetype::freetype::FT_Set_Pixel_Sizes(face, 0, 48) };
-    let characters = load_font_chars(lib, face);
-    (lib, face, Rc::new(RefCell::new(characters)))
+    let (chars, max_width, max_height)= load_font_chars(lib, face, font_size_px);
+    let char_dim = CharacterDimensions {
+        width: max_width as u32, height: max_height as u32
+    };
+
+    (lib, face, Rc::new(RefCell::new(chars)), char_dim)
 }
 
 #[allow(unused)]
 fn init() -> AppState {
+    let font_size_px = 18;
     let dir = env::current_dir().expect("Could not get current directory");
     let (glfw, mut window, events) = init_glfw_opengl(800.0, 600.0);
     let (font_shader, cursor_shader) = init_shaders(&dir);
-    let (lib, face, characters) =
-        init_freetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");
+    let (lib, face, characters, char_dim) =
+        init_freetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size_px);
     let (font_vao, font_vbo) = unsafe { make_text_vao_vbo() };
     let (cursor_vao, cursor_vbo, ebo) = make_cursor_vao_vbo_ebo();
 
@@ -730,7 +753,7 @@ fn init() -> AppState {
         }
     });
 
-    let mut ws = WindowState::new(800.0, 600.0);
+    let mut ws = Rc::new(RefCell::new(WindowState::new(800.0, 600.0, char_dim)));
     let app = AppState {
         ts: TerminalState {
             cursor_pos: (0, 0),
@@ -738,8 +761,9 @@ fn init() -> AppState {
             events,
             window: window.to_owned(),
         },
-        ws: Rc::new(RefCell::new(WindowState::new(800.0, 600.0))),
+        ws,
         renderer: Renderer {
+            font_size_px,
             font_vao,
             font_vbo,
             cursor_vao,
@@ -751,19 +775,21 @@ fn init() -> AppState {
         },
     };
 
-    window.borrow_mut().set_key_callback({
-        // let chars = characters.clone();
-        move |_window, key, _scancode, action, _modifiers| {
-            if let Some(key_pressed) = key_to_char(key) {
-                if action == glfw::Action::Press {
-                    // let ch: &Character = characters.as_ref().borrow().get(&key_pressed).unwrap();
-                    // let scale = 1.0;
+    println!("{}", app.ws.borrow().grid);
 
-                    ws.buffer.push(key_pressed);
-                }
-            }
-        }
-    });
+    // window.borrow_mut().set_key_callback({
+    //     // let chars = characters.clone();
+    //     move |_window, key, _scancode, action, _modifiers| {
+    //         if let Some(key_pressed) = key_to_char(key) {
+    //             if action == glfw::Action::Press {
+    //                 // let ch: &Character = characters.as_ref().borrow().get(&key_pressed).unwrap();
+    //                 // let scale = 1.0;
+    //
+    //                 ws.borrow().buffer.push(key_pressed);
+    //             }
+    //         }
+    //     }
+    // });
 
     app
 }
