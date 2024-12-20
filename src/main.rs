@@ -546,9 +546,6 @@ fn set_uniform_mat4(s: &Shader, uniform_name: std::ffi::CString, transform: [[f3
 
 fn render_cursor(s: &Shader, vao: u32) {
     s.use_shader();
-    unsafe {
-        gl::Disable(gl::CULL_FACE);
-    };
 
     unsafe {
         gl::BindVertexArray(vao);
@@ -572,7 +569,7 @@ fn calculate_cursor_vertices(
 
     // Calculate bottom-left corner in normalized coordinates
     let x = -1.0 + col as f32 * cell_width;
-    let y = 1.0 - (row as f32 + 1.0) * cell_height;
+    let y = 1.0 - (row + 1) as f32 * cell_height;
 
     // Create the vertex positions for the cell
     let vertices = [
