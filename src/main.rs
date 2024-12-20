@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod shader;
+mod yaml_parser;
 
 extern crate freetype;
 extern crate gl;
@@ -46,6 +47,16 @@ struct WindowState {
     // Cells for each character need not be kept in memory
     // They can be derived from their location in the string
     buffer: String,
+    // The index at which to begin rendering the buffer,
+    // if the buffer is larger than the number of cells,
+    // the first n buffer elements should not be rendered,
+    // where n is the difference between the buffer size and
+    // the size of the grid
+    // For example,
+    // if we have a 10x10 grid, that allows 100 characters.
+    // if our buffer has 110 characters, only the last 100 characters
+    // should be rendered. So n here is 10, 110 - 100
+    display_offset: usize,
     next_cell: (usize, usize),
 }
 
@@ -59,10 +70,11 @@ impl WindowState {
             grid: Grid {
                 cell_width,
                 cell_height,
-                rows: width as usize / cell_width as usize,
-                cols: height as usize / cell_height as usize,
+                rows: height as usize / cell_height as usize,
+                cols: width as usize / cell_width as usize,
             },
             buffer: String::new(),
+            display_offset: 0,
             next_cell: (0, 0),
         }
     }
@@ -73,6 +85,20 @@ impl WindowState {
         } else {
             self.next_cell = (self.next_cell.0, self.next_cell.1 + 1);
         }
+
+    }
+
+    fn scroll(&mut self) {
+        // just make the buffer begin rendering at 
+        // ncols * rows_scrolled
+        // So if we scroll down 2 rows,
+        // the buffer should begin rendering at buffer[2 * ncols]
+        // idk how to explain why this works with words but it works in my head
+        // so thats good enough, it's because opengl doesn't have a concept of scrolling,
+        // we have to replicate scrolling in terms of what the screen contents should be
+        // after we scroll n rows, if we scroll 1 row, the last row of the screen should be blank,
+        // and the top row of the screen should disappear.
+        self.display_offset += self.grid.cols;
     }
 
     fn reset_cell(&mut self) {
@@ -169,7 +195,7 @@ fn load_font_chars(lib: ft::FT_Library, face: ft::FT_Face, font_size_px: u32) ->
                 max_height = metrics.height >> 6;
             }
             if glyph.advance.x > max_advance {
-                max_advance = glyph.advance.x;
+                max_advance = glyph.advance.x >> 6;
             }
 
 
@@ -340,7 +366,8 @@ fn make_cursor_vao_vbo_ebo() -> (u32, u32, u32) {
 }
 
 fn render_screen_buffer(renderer: &Renderer, ws: Rc<RefCell<WindowState>>) {
-    ws.borrow_mut().reset_cell();
+    let mut ws = ws.borrow_mut();
+    ws.reset_cell();
     renderer.font_shader.use_shader();
 
     unsafe {
@@ -349,15 +376,22 @@ fn render_screen_buffer(renderer: &Renderer, ws: Rc<RefCell<WindowState>>) {
         gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
         let characters = renderer.font_characters.borrow();
-        let buf = ws.borrow().buffer.clone();
-        for c in buf.chars() {
-            let ftchar = characters.get(&c).unwrap();
+        let buf = ws.buffer.clone();
 
+        if buf[ws.display_offset..].len() + 1 > ws.grid.rows * ws.grid.cols {
+            ws.scroll();
+        }
+        
+        for c in buf[ws.display_offset..].chars() {
+            let ftchar = characters.get(&c).unwrap();
+            
             let (vertices, indices) = calculate_textured_quad_vertices(
-                ws.borrow_mut().get_next_cell(),
+                ws.get_next_cell(),
                 ftchar,
                 800.0,
                 600.0,
+                ws.grid.rows,
+                ws.grid.cols
             );
             set_renderer_vertices(renderer.font_vao, renderer.font_vbo, &vertices, &indices);
 
@@ -377,7 +411,7 @@ fn render_screen_buffer(renderer: &Renderer, ws: Rc<RefCell<WindowState>>) {
             // check_gl_errors();
 
             gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
-            ws.borrow_mut().advance();
+            ws.advance();
         }
     }
 }
@@ -526,13 +560,15 @@ fn render_cursor(s: &Shader, vao: u32) {
 fn calculate_cursor_vertices(
     _window_width: f32,
     _window_height: f32,
+    nrows: usize,
+    ncols: usize,
     cell: (usize, usize),
 ) -> ([f32; 12], [u32; 6]) {
     let (row, col) = cell;
 
     // Calculate cell size in normalized coordinates
-    let cell_width = 2.0 / 80.0;
-    let cell_height = 2.0 / 24.0;
+    let cell_width = 2.0 / ncols as f32;
+    let cell_height = 2.0 / nrows as f32;
 
     // Calculate bottom-left corner in normalized coordinates
     let x = -1.0 + col as f32 * cell_width;
@@ -568,12 +604,14 @@ fn calculate_textured_quad_vertices(
     character: &Character,
     window_width: f32,
     window_height: f32,
+    nrows: usize,
+    ncols: usize
 ) -> ([f32; 20], [u32; 6]) {
     let (row, col) = cell;
 
     // Cell dimensions
-    let cell_width = 2.0 / 80.0;
-    let cell_height = 2.0 / 24.0;
+    let cell_width = 2.0 / ncols as f32;
+    let cell_height = 2.0 / nrows as f32;
 
     // Top-left corner of the cell
     let cell_x = -1.0 + col as f32 * cell_width;
@@ -736,12 +774,15 @@ fn init_freetype(
 
 #[allow(unused)]
 fn init() -> AppState {
-    let font_size_px = 18;
+    let config = yaml_parser::parse_config();
+    let font_size = config.get("font_size").expect("Font size not found in config");
+    let font_size_px: u32 = font_size.parse().expect("Invalid font size");
+    let font_path = config.get("font_path").expect("Font path not found in config");
     let dir = env::current_dir().expect("Could not get current directory");
     let (glfw, mut window, events) = init_glfw_opengl(800.0, 600.0);
     let (font_shader, cursor_shader) = init_shaders(&dir);
     let (lib, face, characters, char_dim) =
-        init_freetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size_px);
+        init_freetype(font_path, font_size_px);
     let (font_vao, font_vbo) = unsafe { make_text_vao_vbo() };
     let (cursor_vao, cursor_vbo, ebo) = make_cursor_vao_vbo_ebo();
 
@@ -860,6 +901,8 @@ fn tick(app: &mut AppState) {
         let (cursor_vertices, cursor_indices) = calculate_cursor_vertices(
             app.ws.borrow().width,
             app.ws.borrow().height,
+            app.ws.borrow().grid.rows,
+            app.ws.borrow().grid.cols,
             app.ws.borrow().get_next_cell(),
         );
 
