@@ -88,6 +88,13 @@ impl WindowState {
 
     }
 
+    fn backspace(&mut self) {
+        self.buffer.pop();
+        if self.display_offset > 0 && self.next_cell.1 == 0 {
+            self.display_offset -= self.grid.cols;
+        }
+    }
+
     fn scroll(&mut self) {
         // just make the buffer begin rendering at 
         // ncols * rows_scrolled
@@ -875,7 +882,7 @@ fn tick(app: &mut AppState) {
 
                 match key {
                     glfw::Key::Backspace => {
-                        ws.buffer.pop();
+                        ws.backspace();
                     }
                     _ => {
                         ws.buffer.push(c);
