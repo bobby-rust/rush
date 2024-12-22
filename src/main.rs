@@ -19,6 +19,12 @@ use std::ffi::CString;
 use std::os::raw::c_void;
 use std::rc::Rc;
 
+use nix::pty::forkpty;
+use nix::pty::ForkptyResult;
+use std::os::unix::io::RawFd;
+use std::process::Command;
+use nix::unistd::read;
+
 struct Character {
     texture_id: u32,
     size: (i32, i32),
@@ -920,7 +926,50 @@ fn tick(app: &mut AppState) {
     }
 }
 
+fn read_from_fd(fd: RawFd) -> Option<Vec<u8>> {
+    let mut read_buffer = [0; 65536];
+    let read_result = read(fd, &mut read_buffer);
+    match read_result {
+        Ok(bytes_read) => Some(read_buffer[..bytes_read].to_vec()),
+        Err(_e) => None
+    }
+}
+
+fn spawn_pty_with_shell(default_shell: String) -> RawFd {
+    match forkpty(None, None) {
+        Ok(fork_pty_result) => {
+            match fork_pty_result {
+                ForkptyResult::Child => {
+                    // Secondary part of the pty, aka stdin pipe?
+                    Command::new(&default_shell).spawn().expect("Failed to spawn shell");
+                    std::thread::sleep(std::time::Duration::from_millis(2000));
+                    std::process::exit(0);
+                }
+                ForkptyResult::Parent { master, child: _ } => {
+                    master.as_raw_fd();
+                }
+            }
+        }
+        Err (e) => { panic!("Failed to fork {:?}", e); }
+    }
+}
+
 fn main() {
+    let default_shell = std::env::var("SHELL").expect("Could not find default shell");
+    let stdout_fd = spawn_pty_with_shell(default_shell);
+    let mut read_buffer = vec![];
+    loop {
+        match read_from_fd(stdout_fd) {
+            Some(mut read_bytes) => {
+                read_buffer.append(&mut read_bytes);
+            }
+            None => {
+                println!("{:?}", String::from_utf8(read_buffer).unwrap());
+                std::process::exit(0);
+            }
+        }
+    }
+
     let mut app: AppState = init();
     check_gl_errors();
     while !app.ts.window.as_ref().borrow().should_close() {
